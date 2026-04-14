@@ -29,6 +29,7 @@ import {
   Input,
   Select,
   Tag,
+  TextArea,
   Timeline,
   Typography,
 } from '@douyinfe/semi-ui';
@@ -558,7 +559,7 @@ const AllergyOrderDetail = () => {
                       }))
                     }
                   />
-                  <Input.TextArea
+                  <TextArea
                     placeholder={t('备注')}
                     value={sentBackForm.remark}
                     autosize={{ minRows: 2, maxRows: 4 }}
@@ -596,7 +597,7 @@ const AllergyOrderDetail = () => {
                       }))
                     }
                   />
-                  <Input.TextArea
+                  <TextArea
                     placeholder={t('备注')}
                     value={sampleReceivedForm.remark}
                     autosize={{ minRows: 2, maxRows: 4 }}
@@ -637,7 +638,7 @@ const AllergyOrderDetail = () => {
                       }))
                     }
                   />
-                  <Input.TextArea
+                  <TextArea
                     placeholder={t('备注')}
                     value={testingForm.remark}
                     autosize={{ minRows: 2, maxRows: 4 }}
