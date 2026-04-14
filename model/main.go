@@ -259,6 +259,9 @@ func migrateDB() error {
 		&Channel{},
 		&Token{},
 		&User{},
+		&MemberProfile{},
+		&EmailLoginCodeStore{},
+		&MemberSession{},
 		&PasskeyCredential{},
 		&Option{},
 		&Redemption{},
@@ -280,6 +283,12 @@ func migrateDB() error {
 		&SubscriptionPreConsumeRecord{},
 		&CustomOAuthProvider{},
 		&UserOAuthBinding{},
+		&AllergyOrder{},
+		&SampleKit{},
+		&LabSubmission{},
+		&LabReport{},
+		&ReportDeliveryLog{},
+		&OrderTimelineEvent{},
 	)
 	if err != nil {
 		return err
@@ -307,6 +316,9 @@ func migrateDBFast() error {
 		{&Channel{}, "Channel"},
 		{&Token{}, "Token"},
 		{&User{}, "User"},
+		{&MemberProfile{}, "MemberProfile"},
+		{&EmailLoginCodeStore{}, "EmailLoginCodeStore"},
+		{&MemberSession{}, "MemberSession"},
 		{&PasskeyCredential{}, "PasskeyCredential"},
 		{&Option{}, "Option"},
 		{&Redemption{}, "Redemption"},
@@ -328,6 +340,12 @@ func migrateDBFast() error {
 		{&SubscriptionPreConsumeRecord{}, "SubscriptionPreConsumeRecord"},
 		{&CustomOAuthProvider{}, "CustomOAuthProvider"},
 		{&UserOAuthBinding{}, "UserOAuthBinding"},
+		{&AllergyOrder{}, "AllergyOrder"},
+		{&SampleKit{}, "SampleKit"},
+		{&LabSubmission{}, "LabSubmission"},
+		{&LabReport{}, "LabReport"},
+		{&ReportDeliveryLog{}, "ReportDeliveryLog"},
+		{&OrderTimelineEvent{}, "OrderTimelineEvent"},
 	}
 	// 动态计算migration数量，确保errChan缓冲区足够大
 	errChan := make(chan error, len(migrations))

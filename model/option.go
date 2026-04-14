@@ -65,6 +65,10 @@ func InitOptionMap() {
 	common.OptionMap["Notice"] = ""
 	common.OptionMap["About"] = ""
 	common.OptionMap["HomePageContent"] = ""
+	common.OptionMap["AllergyHero"] = ""
+	common.OptionMap["AllergyTestimonials"] = ""
+	common.OptionMap["AllergyArticles"] = ""
+	common.OptionMap["AllergyProducts"] = ""
 	common.OptionMap["Footer"] = common.Footer
 	common.OptionMap["SystemName"] = common.SystemName
 	common.OptionMap["Logo"] = common.Logo
