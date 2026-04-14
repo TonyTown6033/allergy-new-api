@@ -1,0 +1,25 @@
+name: Notify parent repo on push
+
+on:
+  push:
+    branches:
+      - codex
+      - main
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger allergy-website submodule update
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.PARENT_REPO_TOKEN }}
+          repository: TonyTown6033/allergy-website
+          event-type: submodule-updated
+          client-payload: |
+            {
+              "submodule": "new-api",
+              "ref": "${{ github.ref }}",
+              "sha": "${{ github.sha }}",
+              "actor": "${{ github.actor }}"
+            }
