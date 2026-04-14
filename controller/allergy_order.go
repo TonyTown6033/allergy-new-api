@@ -69,6 +69,22 @@ type markAdminAllergySampleReceivedRequest struct {
 	Remark     string `json:"remark"`
 }
 
+type markAdminAllergySampleSentBackRequest struct {
+	SentBackAt       string `json:"sent_back_at"`
+	ReturnTrackingNo string `json:"return_tracking_no"`
+	Remark           string `json:"remark"`
+}
+
+type startAdminAllergyTestingRequest struct {
+	StartedAt string `json:"started_at"`
+	Remark    string `json:"remark"`
+}
+
+type completeAdminAllergyOrderRequest struct {
+	CompletedAt string `json:"completed_at"`
+	Remark      string `json:"remark"`
+}
+
 type sendAdminAllergyReportEmailRequest struct {
 	TargetEmail string `json:"target_email"`
 }
@@ -384,6 +400,14 @@ func DownloadAllergyReport(c *gin.Context) {
 	serveAllergyReportFile(c, "attachment")
 }
 
+func PreviewAdminAllergyReport(c *gin.Context) {
+	serveAdminAllergyReportFile(c, "inline")
+}
+
+func DownloadAdminAllergyReport(c *gin.Context) {
+	serveAdminAllergyReportFile(c, "attachment")
+}
+
 func ListAdminAllergyOrders(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
 	orders, total, err := model.ListAdminAllergyOrders(model.AllergyOrderFilter{
@@ -401,9 +425,12 @@ func ListAdminAllergyOrders(c *gin.Context) {
 		items = append(items, gin.H{
 			"order_id":        order.ID,
 			"order_no":        order.OrderNo,
+			"service_name":    order.ServiceNameSnapshot,
+			"recipient_name":  order.RecipientName,
 			"recipient_email": order.RecipientEmail,
 			"payment_status":  order.PaymentStatus,
 			"order_status":    order.OrderStatus,
+			"paid_at":         formatOptionalTime(order.PaidAt),
 			"created_at":      order.CreatedAt.Format(time.RFC3339),
 		})
 	}
@@ -423,34 +450,102 @@ func GetAdminAllergyOrderDetail(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	kit, _ := model.GetSampleKitByOrderID(order.ID)
-	report, _ := model.GetCurrentAllergyReportForOrder(order.ID)
+	kit, err := model.GetSampleKitByOrderID(order.ID)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	submission, err := model.GetLabSubmissionByOrderID(order.ID)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	reports, err := model.ListAllergyReportsForOrder(order.ID)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	timeline, err := model.GetAllergyOrderTimeline(order.ID)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	var currentReport *model.LabReport
+	for _, item := range reports {
+		if item.IsCurrent {
+			currentReport = item
+			break
+		}
+	}
+	if currentReport == nil && len(reports) > 0 {
+		currentReport = reports[0]
+	}
 	response := gin.H{
-		"order_id":         order.ID,
-		"order_no":         order.OrderNo,
-		"payment_status":   order.PaymentStatus,
-		"order_status":     order.OrderStatus,
-		"recipient_email":  order.RecipientEmail,
-		"recipient_name":   order.RecipientName,
-		"recipient_phone":  order.RecipientPhone,
-		"shipping_address": decodeJSONStringToMap(order.ShippingAddressJSON),
-		"sample_kit":       nil,
-		"current_report":   nil,
+		"order_id":                      order.ID,
+		"order_no":                      order.OrderNo,
+		"service_code":                  order.ServiceCode,
+		"service_name":                  order.ServiceNameSnapshot,
+		"service_price_cents":           order.ServicePriceCents,
+		"currency":                      order.Currency,
+		"payment_status":                order.PaymentStatus,
+		"order_status":                  order.OrderStatus,
+		"payment_method":                order.PaymentMethod,
+		"payment_ref":                   order.PaymentRef,
+		"payment_provider_order_no":     order.PaymentProviderOrderNo,
+		"payment_callback_payload_json": order.PaymentCallbackPayloadJSON,
+		"paid_at":                       formatOptionalTime(order.PaidAt),
+		"report_ready_at":               formatOptionalTime(order.ReportReadyAt),
+		"completed_at":                  formatOptionalTime(order.CompletedAt),
+		"cancelled_at":                  formatOptionalTime(order.CancelledAt),
+		"admin_remark":                  order.AdminRemark,
+		"recipient_email":               order.RecipientEmail,
+		"recipient_name":                order.RecipientName,
+		"recipient_phone":               order.RecipientPhone,
+		"shipping_address":              decodeJSONStringToMap(order.ShippingAddressJSON),
+		"created_at":                    order.CreatedAt.Format(time.RFC3339),
+		"updated_at":                    order.UpdatedAt.Format(time.RFC3339),
+		"sample_kit":                    nil,
+		"lab_submission":                nil,
+		"current_report":                nil,
+		"reports":                       buildAdminAllergyReportItems(reports),
+		"timeline":                      buildAdminAllergyTimelineItems(timeline),
 	}
 	if kit != nil {
 		response["sample_kit"] = gin.H{
+			"kit_id":               kit.ID,
 			"kit_code":             kit.KitCode,
 			"kit_status":           kit.Status,
 			"outbound_carrier":     kit.TrackingCompany,
 			"outbound_tracking_no": kit.TrackingNumber,
+			"return_tracking_no":   kit.ReturnTrackingNo,
+			"outbound_shipped_at":  formatOptionalTime(kit.ShippedAt),
+			"delivered_at":         formatOptionalTime(kit.DeliveredAt),
+			"sample_received_at":   formatOptionalTime(kit.SampleReceivedAt),
+			"remark":               kit.Remark,
+			"created_at":           kit.CreatedAt.Format(time.RFC3339),
+			"updated_at":           kit.UpdatedAt.Format(time.RFC3339),
 		}
 	}
-	if report != nil {
-		response["current_report"] = gin.H{
-			"report_id":     report.ID,
-			"report_title":  report.ReportTitle,
-			"report_status": report.Status,
+	if submission != nil {
+		response["lab_submission"] = gin.H{
+			"submission_id":        submission.ID,
+			"lab_name":             submission.LabName,
+			"submission_no":        submission.SubmissionNo,
+			"status":               submission.Status,
+			"external_sample_code": submission.ExternalSampleCode,
+			"tracking_number":      submission.TrackingNumber,
+			"received_at":          formatOptionalTime(submission.ReceivedAt),
+			"submitted_at":         formatOptionalTime(submission.SubmittedAt),
+			"testing_started_at":   formatOptionalTime(submission.TestingStartedAt),
+			"completed_at":         formatOptionalTime(submission.CompletedAt),
+			"raw_payload_json":     submission.RawPayloadJSON,
+			"remark":               submission.Remark,
+			"created_at":           submission.CreatedAt.Format(time.RFC3339),
+			"updated_at":           submission.UpdatedAt.Format(time.RFC3339),
 		}
+	}
+	if currentReport != nil {
+		response["current_report"] = buildAdminAllergyReportItem(currentReport)
 	}
 	common.ApiSuccess(c, response)
 }
@@ -534,6 +629,60 @@ func MarkAdminAllergySampleReceived(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, gin.H{"order_status": model.AllergyOrderStatusSampleReceived})
+}
+
+func MarkAdminAllergySampleSentBack(c *gin.Context) {
+	orderID, ok := parseInt64Param(c, "id")
+	if !ok {
+		common.ApiErrorMsg(c, "订单参数错误")
+		return
+	}
+	var req markAdminAllergySampleSentBackRequest
+	if err := common.DecodeJson(c.Request.Body, &req); err != nil {
+		common.ApiErrorMsg(c, "参数错误")
+		return
+	}
+	sentBackAt := time.Now()
+	if strings.TrimSpace(req.SentBackAt) != "" {
+		parsed, err := time.Parse(time.RFC3339, req.SentBackAt)
+		if err != nil {
+			common.ApiErrorMsg(c, "回寄时间格式错误")
+			return
+		}
+		sentBackAt = parsed
+	}
+	if err := model.MarkAllergySampleSentBack(orderID, sentBackAt, req.ReturnTrackingNo, req.Remark, c.GetInt("id")); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"order_status": model.AllergyOrderStatusSampleReturning})
+}
+
+func StartAdminAllergyTesting(c *gin.Context) {
+	orderID, ok := parseInt64Param(c, "id")
+	if !ok {
+		common.ApiErrorMsg(c, "订单参数错误")
+		return
+	}
+	var req startAdminAllergyTestingRequest
+	if err := common.DecodeJson(c.Request.Body, &req); err != nil {
+		common.ApiErrorMsg(c, "参数错误")
+		return
+	}
+	startedAt := time.Now()
+	if strings.TrimSpace(req.StartedAt) != "" {
+		parsed, err := time.Parse(time.RFC3339, req.StartedAt)
+		if err != nil {
+			common.ApiErrorMsg(c, "开始检测时间格式错误")
+			return
+		}
+		startedAt = parsed
+	}
+	if err := model.StartAllergyOrderTesting(orderID, startedAt, req.Remark, c.GetInt("id")); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"order_status": model.AllergyOrderStatusInTesting})
 }
 
 func UploadAdminAllergyOrderReport(c *gin.Context) {
@@ -679,6 +828,33 @@ func ListAdminAllergyReportDeliveryLogs(c *gin.Context) {
 	common.ApiSuccess(c, items)
 }
 
+func CompleteAdminAllergyOrder(c *gin.Context) {
+	orderID, ok := parseInt64Param(c, "id")
+	if !ok {
+		common.ApiErrorMsg(c, "订单参数错误")
+		return
+	}
+	var req completeAdminAllergyOrderRequest
+	if err := common.DecodeJson(c.Request.Body, &req); err != nil {
+		common.ApiErrorMsg(c, "参数错误")
+		return
+	}
+	completedAt := time.Now()
+	if strings.TrimSpace(req.CompletedAt) != "" {
+		parsed, err := time.Parse(time.RFC3339, req.CompletedAt)
+		if err != nil {
+			common.ApiErrorMsg(c, "完成时间格式错误")
+			return
+		}
+		completedAt = parsed
+	}
+	if err := model.CompleteAllergyOrder(orderID, completedAt, req.Remark, c.GetInt("id")); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"order_status": model.AllergyOrderStatusCompleted})
+}
+
 func parseInt64Param(c *gin.Context, key string) (int64, bool) {
 	value, err := strconv.ParseInt(strings.TrimSpace(c.Param(key)), 10, 64)
 	if err != nil || value <= 0 {
@@ -715,6 +891,54 @@ func formatOptionalTime(value *time.Time) any {
 		return nil
 	}
 	return value.Format(time.RFC3339)
+}
+
+func buildAdminAllergyTimelineItems(events []*model.OrderTimelineEvent) []gin.H {
+	items := make([]gin.H, 0, len(events))
+	for _, event := range events {
+		items = append(items, gin.H{
+			"event_id":           event.ID,
+			"event_type":         event.EventType,
+			"title":              event.EventTitle,
+			"description":        event.EventDesc,
+			"visible_to_user":    event.VisibleToUser,
+			"operator_user_id":   event.OperatorUserID,
+			"event_payload_json": event.EventPayloadJSON,
+			"occurred_at":        event.OccurredAt.Format(time.RFC3339),
+			"created_at":         event.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	return items
+}
+
+func buildAdminAllergyReportItems(reports []*model.LabReport) []gin.H {
+	items := make([]gin.H, 0, len(reports))
+	for _, report := range reports {
+		items = append(items, buildAdminAllergyReportItem(report))
+	}
+	return items
+}
+
+func buildAdminAllergyReportItem(report *model.LabReport) gin.H {
+	return gin.H{
+		"report_id":          report.ID,
+		"report_title":       report.ReportTitle,
+		"report_status":      report.Status,
+		"version":            report.Version,
+		"is_current":         report.IsCurrent,
+		"file_name":          report.FileName,
+		"mime_type":          report.MimeType,
+		"file_size_bytes":    report.FileSizeBytes,
+		"uploaded_at":        formatOptionalTime(report.UploadedAt),
+		"published_at":       formatOptionalTime(report.PublishedAt),
+		"last_email_sent_at": formatOptionalTime(report.LastEmailSentAt),
+		"email_sent_count":   report.EmailSentCount,
+		"preview_url":        fmt.Sprintf("/api/admin/reports/%d/preview", report.ID),
+		"download_url":       fmt.Sprintf("/api/admin/reports/%d/download", report.ID),
+		"remark":             report.Remark,
+		"created_at":         report.CreatedAt.Format(time.RFC3339),
+		"updated_at":         report.UpdatedAt.Format(time.RFC3339),
+	}
 }
 
 func validateAllergyRedirectTarget(raw string, fallback string) (string, error) {
@@ -794,6 +1018,34 @@ func serveAllergyReportFile(c *gin.Context, disposition string) {
 	report, _, err := model.GetAllergyReportForUser(c.GetInt("id"), reportID)
 	if err != nil {
 		c.JSON(http.StatusForbidden, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	if strings.TrimSpace(report.FilePath) == "" {
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "message": "报告文件不存在"})
+		return
+	}
+	if _, err := os.Stat(report.FilePath); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "message": "报告文件不存在"})
+		return
+	}
+	fileName := report.FileName
+	if fileName == "" {
+		fileName = "report.pdf"
+	}
+	c.Header("Content-Type", "application/pdf")
+	c.Header("Content-Disposition", fmt.Sprintf("%s; filename=\"%s\"", disposition, fileName))
+	c.File(report.FilePath)
+}
+
+func serveAdminAllergyReportFile(c *gin.Context, disposition string) {
+	reportID, ok := parseInt64Param(c, "id")
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "报告参数错误"})
+		return
+	}
+	report, err := model.GetLabReportByID(reportID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "message": "报告不存在"})
 		return
 	}
 	if strings.TrimSpace(report.FilePath) == "" {

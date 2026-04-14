@@ -275,6 +275,18 @@ func GetSampleKitByOrderID(orderID int64) (*SampleKit, error) {
 	return &kit, nil
 }
 
+func GetLabSubmissionByOrderID(orderID int64) (*LabSubmission, error) {
+	var submission LabSubmission
+	err := DB.Where("order_id = ?", orderID).First(&submission).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &submission, nil
+}
+
 func UpsertSampleKitForOrder(orderID int64, kitCode string, kitStatus string, carrier string, trackingNo string, shippedAt *time.Time, operatorUserID int) (*SampleKit, error) {
 	now := time.Now()
 	var saved SampleKit
@@ -355,6 +367,100 @@ func UpsertSampleKitForOrder(orderID int64, kitCode string, kitStatus string, ca
 	return &saved, nil
 }
 
+func MarkAllergySampleSentBack(orderID int64, sentBackAt time.Time, returnTrackingNo string, remark string, operatorUserID int) error {
+	now := time.Now()
+	returnTrackingNo = strings.TrimSpace(returnTrackingNo)
+	remark = strings.TrimSpace(remark)
+
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var order AllergyOrder
+		if err := tx.First(&order, orderID).Error; err != nil {
+			return err
+		}
+		if order.PaymentStatus != AllergyPaymentStatusPaid {
+			return errors.New("订单未支付，不能进入履约流程")
+		}
+		if order.OrderStatus != AllergyOrderStatusKitShipped && order.OrderStatus != AllergyOrderStatusSampleReturning {
+			return errors.New("订单当前状态不能标记为样本回寄")
+		}
+
+		var kit SampleKit
+		if err := tx.Where("order_id = ?", orderID).First(&kit).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errors.New("采样盒尚未发货")
+			}
+			return err
+		}
+		kit.Status = AllergyKitStatusSampleSentBack
+		kit.ReturnTrackingNo = returnTrackingNo
+		kit.Remark = remark
+		if err := tx.Model(&kit).Updates(map[string]any{
+			"status":             kit.Status,
+			"return_tracking_no": kit.ReturnTrackingNo,
+			"remark":             kit.Remark,
+			"updated_at":         now,
+		}).Error; err != nil {
+			return err
+		}
+
+		var submission LabSubmission
+		err := tx.Where("order_id = ?", orderID).First(&submission).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			submission = LabSubmission{
+				OrderID:     orderID,
+				SampleKitID: kit.ID,
+			}
+			err = nil
+		}
+		if err != nil {
+			return err
+		}
+		submission.SampleKitID = kit.ID
+		submission.Status = "returning"
+		submission.SubmittedAt = &sentBackAt
+		submission.TrackingNumber = returnTrackingNo
+		submission.Remark = remark
+		if submission.ID == 0 {
+			if err := tx.Create(&submission).Error; err != nil {
+				return err
+			}
+		} else {
+			if err := tx.Model(&submission).Updates(map[string]any{
+				"sample_kit_id":   submission.SampleKitID,
+				"status":          submission.Status,
+				"submitted_at":    submission.SubmittedAt,
+				"tracking_number": submission.TrackingNumber,
+				"remark":          submission.Remark,
+				"updated_at":      now,
+			}).Error; err != nil {
+				return err
+			}
+		}
+
+		if err := tx.Model(&order).Updates(map[string]any{
+			"order_status": AllergyOrderStatusSampleReturning,
+			"admin_remark": remark,
+			"updated_at":   now,
+		}).Error; err != nil {
+			return err
+		}
+
+		eventDesc := "用户已寄回样本，等待实验室签收"
+		if returnTrackingNo != "" {
+			eventDesc = returnTrackingNo
+		} else if remark != "" {
+			eventDesc = remark
+		}
+		payloadJSON := ""
+		if returnTrackingNo != "" {
+			payloadJSON = common.GetJsonString(map[string]any{
+				"return_tracking_no": returnTrackingNo,
+			})
+		}
+		return createOrderTimelineEventTx(tx, orderID, "sample_sent_back", "样本回寄中", eventDesc, true, operatorUserID, payloadJSON, sentBackAt)
+	})
+}
+
 func MarkAllergySampleReceived(orderID int64, receivedAt time.Time, remark string, operatorUserID int) error {
 	now := time.Now()
 	return DB.Transaction(func(tx *gorm.DB) error {
@@ -430,6 +536,73 @@ func MarkAllergySampleReceived(orderID int64, receivedAt time.Time, remark strin
 	})
 }
 
+func StartAllergyOrderTesting(orderID int64, startedAt time.Time, remark string, operatorUserID int) error {
+	now := time.Now()
+	remark = strings.TrimSpace(remark)
+
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var order AllergyOrder
+		if err := tx.First(&order, orderID).Error; err != nil {
+			return err
+		}
+		if order.OrderStatus != AllergyOrderStatusSampleReceived && order.OrderStatus != AllergyOrderStatusInTesting {
+			return errors.New("订单当前状态不能开始检测")
+		}
+
+		kit, err := GetSampleKitByOrderID(orderID)
+		if err != nil {
+			return err
+		}
+
+		var submission LabSubmission
+		err = tx.Where("order_id = ?", orderID).First(&submission).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			submission = LabSubmission{
+				OrderID: orderID,
+			}
+			err = nil
+		}
+		if err != nil {
+			return err
+		}
+		if kit != nil {
+			submission.SampleKitID = kit.ID
+		}
+		submission.Status = "testing"
+		submission.TestingStartedAt = &startedAt
+		submission.Remark = remark
+		if submission.ID == 0 {
+			if err := tx.Create(&submission).Error; err != nil {
+				return err
+			}
+		} else {
+			if err := tx.Model(&submission).Updates(map[string]any{
+				"sample_kit_id":      submission.SampleKitID,
+				"status":             submission.Status,
+				"testing_started_at": submission.TestingStartedAt,
+				"remark":             submission.Remark,
+				"updated_at":         now,
+			}).Error; err != nil {
+				return err
+			}
+		}
+
+		if err := tx.Model(&order).Updates(map[string]any{
+			"order_status": AllergyOrderStatusInTesting,
+			"admin_remark": remark,
+			"updated_at":   now,
+		}).Error; err != nil {
+			return err
+		}
+
+		eventDesc := "检测机构正在分析样本"
+		if remark != "" {
+			eventDesc = remark
+		}
+		return createOrderTimelineEventTx(tx, orderID, "in_testing", "检测中", eventDesc, true, operatorUserID, "", startedAt)
+	})
+}
+
 func CreateAllergyLabReport(orderID int64, reportTitle string, fileName string, filePath string, mimeType string, fileSize int64, operatorUserID int) (*LabReport, error) {
 	now := time.Now()
 	report := &LabReport{}
@@ -497,6 +670,12 @@ func GetCurrentAllergyReportForOrder(orderID int64) (*LabReport, error) {
 		return nil, err
 	}
 	return &report, nil
+}
+
+func ListAllergyReportsForOrder(orderID int64) ([]*LabReport, error) {
+	var reports []*LabReport
+	err := DB.Where("order_id = ?", orderID).Order("version desc, id desc").Find(&reports).Error
+	return reports, err
 }
 
 func PublishAllergyLabReport(reportID int64, operatorUserID int) (*LabReport, error) {
@@ -591,4 +770,50 @@ func ListReportDeliveryLogs(reportID int64) ([]*ReportDeliveryLog, error) {
 	var logs []*ReportDeliveryLog
 	err := DB.Where("report_id = ?", reportID).Order("id desc").Find(&logs).Error
 	return logs, err
+}
+
+func CompleteAllergyOrder(orderID int64, completedAt time.Time, remark string, operatorUserID int) error {
+	now := time.Now()
+	remark = strings.TrimSpace(remark)
+
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var order AllergyOrder
+		if err := tx.First(&order, orderID).Error; err != nil {
+			return err
+		}
+		if order.OrderStatus != AllergyOrderStatusReportReady && order.OrderStatus != AllergyOrderStatusCompleted {
+			return errors.New("订单当前状态不能标记为完成")
+		}
+
+		if err := tx.Model(&order).Updates(map[string]any{
+			"order_status": AllergyOrderStatusCompleted,
+			"completed_at": &completedAt,
+			"admin_remark": remark,
+			"updated_at":   now,
+		}).Error; err != nil {
+			return err
+		}
+
+		var submission LabSubmission
+		err := tx.Where("order_id = ?", orderID).First(&submission).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		if err == nil {
+			if err := tx.Model(&submission).Updates(map[string]any{
+				"status":       "completed",
+				"completed_at": &completedAt,
+				"remark":       remark,
+				"updated_at":   now,
+			}).Error; err != nil {
+				return err
+			}
+		}
+
+		eventDesc := "订单已完成"
+		if remark != "" {
+			eventDesc = remark
+		}
+		return createOrderTimelineEventTx(tx, orderID, "completed", "订单已完成", eventDesc, true, operatorUserID, "", completedAt)
+	})
 }
