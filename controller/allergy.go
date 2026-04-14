@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -18,6 +19,8 @@ const (
 	allergyTestimonialsOptionKey = "AllergyTestimonials"
 	allergyArticlesOptionKey     = "AllergyArticles"
 	allergyProductsOptionKey     = "AllergyProducts"
+	allergyDevLoginEmail         = "member@example.com"
+	allergyDevLoginCode          = "123456"
 )
 
 type allergyHeroContent struct {
@@ -156,9 +159,13 @@ func LoginAllergyMember(c *gin.Context) {
 		common.ApiErrorMsg(c, "验证码不能为空")
 		return
 	}
-	if _, err := model.ConsumeEmailLoginCode(email, model.AllergyLoginCodePurpose, req.Code); err != nil {
-		common.ApiErrorMsg(c, err.Error())
-		return
+	if !allowAllergyDevLogin(c, email, req.Code) {
+		if _, err := model.ConsumeEmailLoginCode(email, model.AllergyLoginCodePurpose, req.Code); err != nil {
+			common.ApiErrorMsg(c, err.Error())
+			return
+		}
+	} else {
+		common.SysLog(fmt.Sprintf("[allergy-auth] using local development login shortcut for %s", common.MaskEmail(email)))
 	}
 
 	isNewUser := false
@@ -187,6 +194,25 @@ func LoginAllergyMember(c *gin.Context) {
 			"email": user.Email,
 		},
 	})
+}
+
+func allowAllergyDevLogin(c *gin.Context, email string, code string) bool {
+	if model.NormalizeEmail(email) != allergyDevLoginEmail || strings.TrimSpace(code) != allergyDevLoginCode {
+		return false
+	}
+	if common.DebugEnabled {
+		return true
+	}
+	host := c.Request.Host
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		host = parsedHost
+	}
+	switch strings.Trim(host, "[]") {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	default:
+		return false
+	}
 }
 
 func UpdateAllergyProfile(c *gin.Context) {

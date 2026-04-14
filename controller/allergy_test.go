@@ -320,6 +320,53 @@ func TestAllergyMemberLoginLifecycleCreatesSessionAndSupportsMeLogout(t *testing
 	}
 }
 
+func TestAllergyMemberLoginAllowsLocalDevCredential(t *testing.T) {
+	db, engine := setupAllergyControllerTest(t)
+
+	loginRecorder := performAllergyRequest(t, engine, http.MethodPost, "http://localhost:3000/api/auth/login", map[string]any{
+		"email": "member@example.com",
+		"code":  "123456",
+	}, nil)
+	if loginRecorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", loginRecorder.Code, loginRecorder.Body.String())
+	}
+
+	loginResponse := decodeAllergyJSON[allergyLoginResponse](t, loginRecorder)
+	if !loginResponse.Success || loginResponse.Token == "" {
+		t.Fatalf("expected localhost dev credential to login successfully, got body=%s", loginRecorder.Body.String())
+	}
+
+	var user model.User
+	if err := db.Where("email = ?", "member@example.com").First(&user).Error; err != nil {
+		t.Fatalf("expected dev login to create member user: %v", err)
+	}
+
+	var codeCount int64
+	if err := db.Model(&model.EmailLoginCodeStore{}).Where("email = ?", "member@example.com").Count(&codeCount).Error; err != nil {
+		t.Fatalf("failed to count login codes: %v", err)
+	}
+	if codeCount != 0 {
+		t.Fatalf("expected localhost dev login to bypass stored verification code, got %d records", codeCount)
+	}
+}
+
+func TestAllergyMemberLoginRejectsDevCredentialOutsideLocalhost(t *testing.T) {
+	_, engine := setupAllergyControllerTest(t)
+
+	loginRecorder := performAllergyRequest(t, engine, http.MethodPost, "/api/auth/login", map[string]any{
+		"email": "member@example.com",
+		"code":  "123456",
+	}, nil)
+	if loginRecorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", loginRecorder.Code, loginRecorder.Body.String())
+	}
+
+	loginResponse := decodeAllergyJSON[allergyLoginResponse](t, loginRecorder)
+	if loginResponse.Success {
+		t.Fatalf("expected dev credential to be rejected outside localhost requests")
+	}
+}
+
 func TestAllergyLoginReturnsIsNewUserFlag(t *testing.T) {
 	db, engine := setupAllergyControllerTest(t)
 
