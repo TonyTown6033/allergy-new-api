@@ -101,6 +101,75 @@ type allergyAdminSendEmailData struct {
 	DeliveryStatus string `json:"delivery_status"`
 }
 
+type allergyAdminOrderListItem struct {
+	OrderID        int64  `json:"order_id"`
+	OrderNo        string `json:"order_no"`
+	ServiceName    string `json:"service_name"`
+	RecipientName  string `json:"recipient_name"`
+	RecipientEmail string `json:"recipient_email"`
+	PaymentStatus  string `json:"payment_status"`
+	OrderStatus    string `json:"order_status"`
+	PaidAt         string `json:"paid_at"`
+}
+
+type allergyAdminOrderListPage struct {
+	Page     int                         `json:"page"`
+	PageSize int                         `json:"page_size"`
+	Total    int                         `json:"total"`
+	Items    []allergyAdminOrderListItem `json:"items"`
+}
+
+type allergyAdminTimelineItem struct {
+	EventType        string `json:"event_type"`
+	Title            string `json:"title"`
+	Description      string `json:"description"`
+	VisibleToUser    bool   `json:"visible_to_user"`
+	EventPayloadJSON string `json:"event_payload_json"`
+	OccurredAt       string `json:"occurred_at"`
+}
+
+type allergyAdminReportItem struct {
+	ReportID        int64  `json:"report_id"`
+	ReportTitle     string `json:"report_title"`
+	ReportStatus    string `json:"report_status"`
+	Version         int    `json:"version"`
+	IsCurrent       bool   `json:"is_current"`
+	PreviewURL      string `json:"preview_url"`
+	DownloadURL     string `json:"download_url"`
+	EmailSentCount  int    `json:"email_sent_count"`
+	LastEmailSentAt string `json:"last_email_sent_at"`
+}
+
+type allergyAdminOrderDetailData struct {
+	OrderID                    int64  `json:"order_id"`
+	OrderNo                    string `json:"order_no"`
+	ServiceName                string `json:"service_name"`
+	PaymentStatus              string `json:"payment_status"`
+	OrderStatus                string `json:"order_status"`
+	PaymentMethod              string `json:"payment_method"`
+	PaymentRef                 string `json:"payment_ref"`
+	PaymentProviderOrderNo     string `json:"payment_provider_order_no"`
+	PaymentCallbackPayloadJSON string `json:"payment_callback_payload_json"`
+	AdminRemark                string `json:"admin_remark"`
+	SampleKit                  *struct {
+		KitCode            string `json:"kit_code"`
+		KitStatus          string `json:"kit_status"`
+		OutboundTrackingNo string `json:"outbound_tracking_no"`
+		ReturnTrackingNo   string `json:"return_tracking_no"`
+		SampleReceivedAt   string `json:"sample_received_at"`
+	} `json:"sample_kit"`
+	LabSubmission *struct {
+		Status           string `json:"status"`
+		TrackingNumber   string `json:"tracking_number"`
+		SubmittedAt      string `json:"submitted_at"`
+		TestingStartedAt string `json:"testing_started_at"`
+		CompletedAt      string `json:"completed_at"`
+	} `json:"lab_submission"`
+	CurrentReport *allergyAdminReportItem    `json:"current_report"`
+	Reports       []allergyAdminReportItem   `json:"reports"`
+	Timeline      []allergyAdminTimelineItem `json:"timeline"`
+}
+
 type allergyDeliveryLogItem struct {
 	Target          string `json:"target"`
 	Status          string `json:"status"`
@@ -204,8 +273,13 @@ func setupAllergyFlowControllerTest(t *testing.T) (*gorm.DB, *gin.Engine) {
 		adminRoute.GET("/orders/:id", GetAdminAllergyOrderDetail)
 		adminRoute.PATCH("/orders/:id/status", UpdateAdminAllergyOrderStatus)
 		adminRoute.POST("/orders/:id/kit", UpsertAdminAllergyOrderKit)
+		adminRoute.POST("/orders/:id/sample-sent-back", MarkAdminAllergySampleSentBack)
 		adminRoute.POST("/orders/:id/sample-received", MarkAdminAllergySampleReceived)
+		adminRoute.POST("/orders/:id/testing-started", StartAdminAllergyTesting)
 		adminRoute.POST("/orders/:id/report", UploadAdminAllergyOrderReport)
+		adminRoute.POST("/orders/:id/complete", CompleteAdminAllergyOrder)
+		adminRoute.GET("/reports/:id/preview", PreviewAdminAllergyReport)
+		adminRoute.GET("/reports/:id/download", DownloadAdminAllergyReport)
 		adminRoute.POST("/reports/:id/publish", PublishAdminAllergyReport)
 		adminRoute.POST("/reports/:id/send-email", SendAdminAllergyReportEmail)
 		adminRoute.GET("/reports/:id/delivery-logs", ListAdminAllergyReportDeliveryLogs)
@@ -618,21 +692,30 @@ func TestAllergyAdminFulfillmentAndReportFlow(t *testing.T) {
 	db, engine := setupAllergyFlowControllerTest(t)
 	user, _ := seedAllergyMemberSession(t, db, "member@example.com")
 	admin := seedAdminUser(t, db)
+	paidAt := time.Now().Add(-2 * time.Hour)
+	sentBackAt := paidAt.Add(40 * time.Minute)
+	receivedAt := sentBackAt.Add(8 * time.Hour)
+	testingStartedAt := receivedAt.Add(30 * time.Minute)
+	completedAt := testingStartedAt.Add(24 * time.Hour)
 
 	order := model.AllergyOrder{
-		OrderNo:             "AO-ADMIN-001",
-		UserID:              user.Id,
-		ServiceCode:         "allergy-test-basic",
-		ServiceNameSnapshot: "埃勒吉居家过敏原检测服务",
-		ServicePriceCents:   19900,
-		Currency:            "CNY",
-		PaymentStatus:       "paid",
-		OrderStatus:         "paid",
-		RecipientName:       "张三",
-		RecipientPhone:      "13800000000",
-		RecipientEmail:      user.Email,
-		ShippingAddressJSON: `{"province":"上海市","city":"上海市","district":"浦东新区","address_line":"世纪大道 100 号"}`,
-		PaidAt:              timePtr(time.Now()),
+		OrderNo:                    "AO-ADMIN-001",
+		UserID:                     user.Id,
+		ServiceCode:                "allergy-test-basic",
+		ServiceNameSnapshot:        "埃勒吉居家过敏原检测服务",
+		ServicePriceCents:          19900,
+		Currency:                   "CNY",
+		PaymentStatus:              "paid",
+		OrderStatus:                "paid",
+		RecipientName:              "张三",
+		RecipientPhone:             "13800000000",
+		RecipientEmail:             user.Email,
+		ShippingAddressJSON:        `{"province":"上海市","city":"上海市","district":"浦东新区","address_line":"世纪大道 100 号"}`,
+		PaymentMethod:              "alipay",
+		PaymentRef:                 "AO_PAY_ADMIN_001",
+		PaymentProviderOrderNo:     "EPAY-ADMIN-001",
+		PaymentCallbackPayloadJSON: `{"trade_no":"EPAY-ADMIN-001","status":"success"}`,
+		PaidAt:                     timePtr(paidAt),
 	}
 	if err := db.Create(&order).Error; err != nil {
 		t.Fatalf("failed to create order: %v", err)
@@ -650,24 +733,37 @@ func TestAllergyAdminFulfillmentAndReportFlow(t *testing.T) {
 		"kit_status":           "shipped",
 		"outbound_carrier":     "顺丰",
 		"outbound_tracking_no": "SF1234567890",
-		"outbound_shipped_at":  time.Now().Format(time.RFC3339),
+		"outbound_shipped_at":  paidAt.Add(10 * time.Minute).Format(time.RFC3339),
 	}, headers)
 	_ = decodeAllergyAPIResponse[map[string]any](t, kitRecorder)
 
+	sentBackRecorder := performFlowRequest(t, engine, http.MethodPost, fmt.Sprintf("/api/admin/orders/%d/sample-sent-back", order.ID), map[string]any{
+		"sent_back_at":       sentBackAt.Format(time.RFC3339),
+		"return_tracking_no": "SF-RETURN-001",
+		"remark":             "用户已回寄样本",
+	}, headers)
+	_ = decodeAllergyAPIResponse[map[string]any](t, sentBackRecorder)
+
 	sampleRecorder := performFlowRequest(t, engine, http.MethodPost, fmt.Sprintf("/api/admin/orders/%d/sample-received", order.ID), map[string]any{
-		"received_at": time.Now().Format(time.RFC3339),
+		"received_at": receivedAt.Format(time.RFC3339),
 		"remark":      "检测机构已签收",
 	}, headers)
 	_ = decodeAllergyAPIResponse[map[string]any](t, sampleRecorder)
 
 	adminListRecorder := performFlowRequest(t, engine, http.MethodGet, "/api/admin/orders?payment_status=paid&order_status=sample_received", nil, headers)
-	var listEnvelope allergyAPIResponse
-	if err := common.Unmarshal(adminListRecorder.Body.Bytes(), &listEnvelope); err != nil {
-		t.Fatalf("failed to decode admin list: %v", err)
+	adminListData := decodeAllergyAPIResponse[allergyAdminOrderListPage](t, adminListRecorder)
+	if adminListData.Total != 1 || len(adminListData.Items) != 1 {
+		t.Fatalf("unexpected admin list: %+v", adminListData)
 	}
-	if !listEnvelope.Success {
-		t.Fatalf("unexpected admin list failure: %s", listEnvelope.Message)
+	if adminListData.Items[0].ServiceName != "埃勒吉居家过敏原检测服务" || adminListData.Items[0].PaidAt == "" {
+		t.Fatalf("unexpected admin list item: %+v", adminListData.Items[0])
 	}
+
+	testingRecorder := performFlowRequest(t, engine, http.MethodPost, fmt.Sprintf("/api/admin/orders/%d/testing-started", order.ID), map[string]any{
+		"started_at": testingStartedAt.Format(time.RFC3339),
+		"remark":     "实验室开始检测",
+	}, headers)
+	_ = decodeAllergyAPIResponse[map[string]any](t, testingRecorder)
 
 	reportBytes := []byte("%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF")
 	uploadRecorder := performMultipartFlowRequest(t, engine, fmt.Sprintf("/api/admin/orders/%d/report", order.ID), map[string]string{
@@ -695,19 +791,55 @@ func TestAllergyAdminFulfillmentAndReportFlow(t *testing.T) {
 		t.Fatalf("unexpected delivery logs: %+v", logs)
 	}
 
+	completeRecorder := performFlowRequest(t, engine, http.MethodPost, fmt.Sprintf("/api/admin/orders/%d/complete", order.ID), map[string]any{
+		"completed_at": completedAt.Format(time.RFC3339),
+		"remark":       "人工确认履约完成",
+	}, headers)
+	_ = decodeAllergyAPIResponse[map[string]any](t, completeRecorder)
+
+	detailRecorder := performFlowRequest(t, engine, http.MethodGet, fmt.Sprintf("/api/admin/orders/%d", order.ID), nil, headers)
+	detail := decodeAllergyAPIResponse[allergyAdminOrderDetailData](t, detailRecorder)
+	if detail.OrderStatus != "completed" || detail.PaymentMethod != "alipay" || detail.PaymentRef != "AO_PAY_ADMIN_001" {
+		t.Fatalf("unexpected admin detail order fields: %+v", detail)
+	}
+	if !strings.Contains(detail.PaymentCallbackPayloadJSON, "EPAY-ADMIN-001") || detail.AdminRemark != "人工确认履约完成" {
+		t.Fatalf("unexpected admin detail payment fields: %+v", detail)
+	}
+	if detail.SampleKit == nil || detail.SampleKit.ReturnTrackingNo != "SF-RETURN-001" || detail.SampleKit.SampleReceivedAt == "" {
+		t.Fatalf("unexpected admin detail sample kit: %+v", detail.SampleKit)
+	}
+	if detail.LabSubmission == nil || detail.LabSubmission.Status != "completed" || detail.LabSubmission.TrackingNumber != "SF-RETURN-001" {
+		t.Fatalf("unexpected admin detail lab submission: %+v", detail.LabSubmission)
+	}
+	if detail.CurrentReport == nil || detail.CurrentReport.ReportStatus != "published" || detail.CurrentReport.PreviewURL == "" || detail.CurrentReport.DownloadURL == "" {
+		t.Fatalf("unexpected admin detail current report: %+v", detail.CurrentReport)
+	}
+	if len(detail.Reports) != 1 || detail.Reports[0].EmailSentCount != 1 || detail.Reports[0].LastEmailSentAt == "" {
+		t.Fatalf("unexpected admin detail reports: %+v", detail.Reports)
+	}
+
+	adminPreviewRecorder := performFlowRequest(t, engine, http.MethodGet, detail.CurrentReport.PreviewURL, nil, headers)
+	if adminPreviewRecorder.Code != http.StatusOK {
+		t.Fatalf("expected admin preview 200, got %d body=%s", adminPreviewRecorder.Code, adminPreviewRecorder.Body.String())
+	}
+	adminDownloadRecorder := performFlowRequest(t, engine, http.MethodGet, detail.CurrentReport.DownloadURL, nil, headers)
+	if adminDownloadRecorder.Code != http.StatusOK {
+		t.Fatalf("expected admin download 200, got %d body=%s", adminDownloadRecorder.Code, adminDownloadRecorder.Body.String())
+	}
+
 	var persistedOrder model.AllergyOrder
 	if err := db.First(&persistedOrder, order.ID).Error; err != nil {
 		t.Fatalf("failed to reload order: %v", err)
 	}
-	if persistedOrder.OrderStatus != "report_ready" {
-		t.Fatalf("expected order_status report_ready, got %q", persistedOrder.OrderStatus)
+	if persistedOrder.OrderStatus != "completed" || persistedOrder.CompletedAt == nil {
+		t.Fatalf("expected completed order, got %+v", persistedOrder)
 	}
 
 	var timeline []model.OrderTimelineEvent
 	if err := db.Where("order_id = ?", order.ID).Order("id asc").Find(&timeline).Error; err != nil {
 		t.Fatalf("failed to query timeline: %v", err)
 	}
-	expectedEvents := []string{"kit_preparing", "kit_shipped", "sample_received", "report_uploaded", "report_published", "report_email_sent"}
+	expectedEvents := []string{"kit_preparing", "kit_shipped", "sample_sent_back", "sample_received", "in_testing", "report_uploaded", "report_published", "report_email_sent", "completed"}
 	for _, eventType := range expectedEvents {
 		found := false
 		for _, item := range timeline {
@@ -719,6 +851,9 @@ func TestAllergyAdminFulfillmentAndReportFlow(t *testing.T) {
 		if !found {
 			t.Fatalf("expected timeline event %q, got %+v", eventType, timeline)
 		}
+	}
+	if len(detail.Timeline) < len(expectedEvents) {
+		t.Fatalf("expected admin detail timeline to include enriched events, got %+v", detail.Timeline)
 	}
 }
 

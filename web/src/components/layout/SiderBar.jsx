@@ -37,6 +37,7 @@ const routerMap = {
   redemption: '/console/redemption',
   topup: '/console/topup',
   user: '/console/user',
+  allergy_orders: '/console/allergy-orders',
   subscription: '/console/subscription',
   log: '/console/log',
   midjourney: '/console/midjourney',
@@ -184,6 +185,12 @@ const SiderBar = ({ onNavigate = () => {} }) => {
         className: isAdmin() ? '' : 'tableHiddle',
       },
       {
+        text: t('过敏订单'),
+        itemKey: 'allergy_orders',
+        to: '/allergy-orders',
+        className: isAdmin() ? '' : 'tableHiddle',
+      },
+      {
         text: t('系统设置'),
         itemKey: 'setting',
         to: '/setting',
@@ -286,6 +293,10 @@ const SiderBar = ({ onNavigate = () => {} }) => {
       } else {
         matchingKey = 'chat';
       }
+    }
+
+    if (!matchingKey && currentPath.startsWith('/console/allergy-orders')) {
+      matchingKey = 'allergy_orders';
     }
 
     // 如果找到匹配的键，更新选中的键
