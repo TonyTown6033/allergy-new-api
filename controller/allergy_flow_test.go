@@ -458,6 +458,71 @@ func TestAllergyOrderCreatePayAndCallbackFlow(t *testing.T) {
 	}
 }
 
+func TestAllergyOrderEpayReturnRedirectsToRequestedFrontendURL(t *testing.T) {
+	db, engine := setupAllergyFlowControllerTest(t)
+	user, token := seedAllergyMemberSession(t, db, "member@example.com")
+	headers := map[string]string{"Authorization": "Bearer " + token}
+
+	createRecorder := performFlowRequest(t, engine, http.MethodPost, "/api/orders", map[string]any{
+		"service_code":    "allergy-test-basic",
+		"recipient_name":  "张三",
+		"recipient_phone": "13800000000",
+		"recipient_email": user.Email,
+		"shipping_address": map[string]any{
+			"province":     "上海市",
+			"city":         "上海市",
+			"district":     "浦东新区",
+			"address_line": "世纪大道 100 号",
+		},
+	}, headers)
+	createData := decodeAllergyAPIResponse[allergyOrderCreateData](t, createRecorder)
+
+	successURL := fmt.Sprintf("https://www.allergy.test/orders/%d", createData.OrderID)
+	cancelURL := fmt.Sprintf("https://www.allergy.test/orders/%d?pay=cancelled", createData.OrderID)
+
+	payRecorder := performFlowRequest(t, engine, http.MethodPost, fmt.Sprintf("/api/orders/%d/pay", createData.OrderID), map[string]any{
+		"payment_method": "alipay",
+		"success_url":    successURL,
+		"cancel_url":     cancelURL,
+	}, headers)
+	payData := decodeAllergyAPIResponse[allergyPayData](t, payRecorder)
+
+	callbackParams := map[string]string{
+		"pid":          operation_setting.EpayId,
+		"type":         "alipay",
+		"out_trade_no": payData.TradeNo,
+		"trade_no":     "EPAY-RETURN-ORDER-001",
+		"name":         "Allergy Order",
+		"money":        "199.00",
+		"trade_status": epay.StatusTradeSuccess,
+		"sign_type":    "MD5",
+	}
+	signed := epay.GenerateParams(callbackParams, operation_setting.EpayKey)
+	query := url.Values{}
+	for key, value := range signed {
+		query.Set(key, value)
+	}
+	query.Set("success", successURL)
+	query.Set("cancel", cancelURL)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/orders/epay/return?"+query.Encode(), nil)
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusFound {
+		t.Fatalf("expected redirect response, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if location := recorder.Header().Get("Location"); location != successURL {
+		t.Fatalf("expected redirect to success url, got %q", location)
+	}
+
+	payStatusRecorder := performFlowRequest(t, engine, http.MethodGet, fmt.Sprintf("/api/orders/%d/pay-status", createData.OrderID), nil, headers)
+	payStatus := decodeAllergyAPIResponse[allergyPayStatusData](t, payStatusRecorder)
+	if payStatus.PaymentStatus != "paid" || payStatus.OrderStatus != "paid" {
+		t.Fatalf("expected order to be paid after return callback, got %+v", payStatus)
+	}
+}
+
 func TestAllergyOrderQueriesAndReportPermissions(t *testing.T) {
 	db, engine := setupAllergyFlowControllerTest(t)
 	user, token := seedAllergyMemberSession(t, db, "member@example.com")

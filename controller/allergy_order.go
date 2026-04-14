@@ -211,18 +211,24 @@ func RequestAllergyOrderEpay(c *gin.Context) {
 		return
 	}
 	callbackAddress := service.GetCallbackAddress()
-	notifyURL, err := url.Parse(callbackAddress + "/api/orders/epay/notify")
+	notifyURL, err := url.Parse(strings.TrimRight(callbackAddress, "/") + "/api/orders/epay/notify")
 	if err != nil {
 		common.ApiErrorMsg(c, "回调地址配置错误")
 		return
 	}
-	returnTarget := strings.TrimSpace(req.SuccessURL)
-	if returnTarget == "" {
-		returnTarget = fmt.Sprintf("%s/orders/%d", strings.TrimRight(system_setting.ServerAddress, "/"), order.ID)
-	}
-	returnURL, err := url.Parse(returnTarget)
+	returnTarget, err := validateAllergyRedirectTarget(req.SuccessURL, fmt.Sprintf("%s/orders/%d", strings.TrimRight(system_setting.ServerAddress, "/"), order.ID))
 	if err != nil {
 		common.ApiErrorMsg(c, "支付返回地址错误")
+		return
+	}
+	cancelTarget, err := validateAllergyRedirectTarget(req.CancelURL, returnTarget)
+	if err != nil {
+		common.ApiErrorMsg(c, "支付取消地址错误")
+		return
+	}
+	returnURL, err := buildAllergyEpayReturnURL(callbackAddress, returnTarget, cancelTarget)
+	if err != nil {
+		common.ApiErrorMsg(c, "支付回跳地址错误")
 		return
 	}
 	tradeNo := model.GenerateAllergyPaymentTradeNo(order.ID)
@@ -280,6 +286,9 @@ func AllergyOrderEpayNotify(c *gin.Context) {
 }
 
 func AllergyOrderEpayReturn(c *gin.Context) {
+	successTarget := normalizeAllergyRedirectTarget(c.Query("success"), strings.TrimRight(system_setting.ServerAddress, "/")+"/orders")
+	cancelTarget := normalizeAllergyRedirectTarget(c.Query("cancel"), successTarget)
+	redirectTarget := cancelTarget
 	params, ok := parseEpayRequestParams(c)
 	if ok {
 		client := GetEpayClient()
@@ -288,10 +297,11 @@ func AllergyOrderEpayReturn(c *gin.Context) {
 				LockOrder(verifyInfo.ServiceTradeNo)
 				_, _ = model.CompleteAllergyOrderPayment(verifyInfo.ServiceTradeNo, verifyInfo.TradeNo, common.GetJsonString(verifyInfo))
 				UnlockOrder(verifyInfo.ServiceTradeNo)
+				redirectTarget = successTarget
 			}
 		}
 	}
-	c.Redirect(http.StatusFound, strings.TrimRight(system_setting.ServerAddress, "/")+"/orders")
+	c.Redirect(http.StatusFound, redirectTarget)
 }
 
 func GetAllergyOrderPayStatus(c *gin.Context) {
@@ -707,18 +717,67 @@ func formatOptionalTime(value *time.Time) any {
 	return value.Format(time.RFC3339)
 }
 
+func validateAllergyRedirectTarget(raw string, fallback string) (string, error) {
+	target := strings.TrimSpace(raw)
+	if target == "" {
+		return fallback, nil
+	}
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return "", err
+	}
+	if !parsed.IsAbs() || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return "", fmt.Errorf("invalid redirect target")
+	}
+	return parsed.String(), nil
+}
+
+func normalizeAllergyRedirectTarget(raw string, fallback string) string {
+	target, err := validateAllergyRedirectTarget(raw, fallback)
+	if err != nil {
+		return fallback
+	}
+	return target
+}
+
+func buildAllergyEpayReturnURL(callbackAddress string, successTarget string, cancelTarget string) (*url.URL, error) {
+	returnURL, err := url.Parse(strings.TrimRight(callbackAddress, "/") + "/api/orders/epay/return")
+	if err != nil {
+		return nil, err
+	}
+	query := returnURL.Query()
+	query.Set("success", successTarget)
+	query.Set("cancel", cancelTarget)
+	returnURL.RawQuery = query.Encode()
+	return returnURL, nil
+}
+
 func parseEpayRequestParams(c *gin.Context) (map[string]string, bool) {
 	var params map[string]string
+	filterParam := func(key string) bool {
+		switch key {
+		case "success", "cancel":
+			return true
+		default:
+			return false
+		}
+	}
 	if c.Request.Method == http.MethodPost {
 		if err := c.Request.ParseForm(); err != nil {
 			return nil, false
 		}
 		params = lo.Reduce(lo.Keys(c.Request.PostForm), func(r map[string]string, t string, i int) map[string]string {
+			if filterParam(t) {
+				return r
+			}
 			r[t] = c.Request.PostForm.Get(t)
 			return r
 		}, map[string]string{})
 	} else {
 		params = lo.Reduce(lo.Keys(c.Request.URL.Query()), func(r map[string]string, t string, i int) map[string]string {
+			if filterParam(t) {
+				return r
+			}
 			r[t] = c.Request.URL.Query().Get(t)
 			return r
 		}, map[string]string{})
