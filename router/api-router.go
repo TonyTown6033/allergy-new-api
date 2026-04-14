@@ -14,6 +14,7 @@ import (
 func SetApiRouter(router *gin.Engine) {
 	apiRouter := router.Group("/api")
 	apiRouter.Use(middleware.RouteTag("api"))
+	apiRouter.Use(middleware.CORS())
 	apiRouter.Use(gzip.Gzip(gzip.DefaultCompression))
 	apiRouter.Use(middleware.BodyStorageCleanup()) // 清理请求体存储
 	apiRouter.Use(middleware.GlobalAPIRateLimit())
@@ -28,6 +29,10 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/user-agreement", controller.GetUserAgreement)
 		apiRouter.GET("/privacy-policy", controller.GetPrivacyPolicy)
 		apiRouter.GET("/about", controller.GetAbout)
+		apiRouter.GET("/hero", controller.GetAllergyHero)
+		apiRouter.GET("/testimonials", controller.GetAllergyTestimonials)
+		apiRouter.GET("/articles", controller.GetAllergyArticles)
+		apiRouter.GET("/products", controller.GetAllergyProducts)
 		//apiRouter.GET("/midjourney", controller.GetMidjourney)
 		apiRouter.GET("/home_page_content", controller.GetHomePageContent)
 		apiRouter.GET("/pricing", middleware.TryUserAuth(), controller.GetPricing)
@@ -52,6 +57,48 @@ func SetApiRouter(router *gin.Engine) {
 
 		// Universal secure verification routes
 		apiRouter.POST("/verify", middleware.UserAuth(), middleware.CriticalRateLimit(), controller.UniversalVerify)
+
+		allergyAuthRoute := apiRouter.Group("/auth")
+		{
+			allergyAuthRoute.POST("/send-code", middleware.CriticalRateLimit(), controller.SendAllergyLoginCode)
+			allergyAuthRoute.POST("/login", middleware.CriticalRateLimit(), controller.LoginAllergyMember)
+			allergyAuthRoute.GET("/me", middleware.AllergyMemberAuth(), controller.GetAllergyAuthMe)
+			allergyAuthRoute.POST("/logout", middleware.AllergyMemberAuth(), controller.LogoutAllergyMember)
+			allergyAuthRoute.PATCH("/profile", middleware.AllergyMemberAuth(), controller.UpdateAllergyProfile)
+		}
+
+		allergyOrderRoute := apiRouter.Group("/")
+		allergyOrderRoute.Use(middleware.AllergyMemberAuth())
+		{
+			allergyOrderRoute.POST("/orders", controller.CreateAllergyOrder)
+			allergyOrderRoute.GET("/orders", controller.ListAllergyOrders)
+			allergyOrderRoute.GET("/orders/:id", controller.GetAllergyOrderDetail)
+			allergyOrderRoute.POST("/orders/:id/pay", middleware.CriticalRateLimit(), controller.RequestAllergyOrderEpay)
+			allergyOrderRoute.GET("/orders/:id/pay-status", controller.GetAllergyOrderPayStatus)
+			allergyOrderRoute.GET("/orders/:id/timeline", controller.GetAllergyOrderTimeline)
+			allergyOrderRoute.GET("/orders/:id/report", controller.GetAllergyOrderReport)
+			allergyOrderRoute.GET("/reports/:id/preview", controller.PreviewAllergyReport)
+			allergyOrderRoute.GET("/reports/:id/download", controller.DownloadAllergyReport)
+		}
+
+		apiRouter.POST("/orders/epay/notify", controller.AllergyOrderEpayNotify)
+		apiRouter.GET("/orders/epay/notify", controller.AllergyOrderEpayNotify)
+		apiRouter.POST("/orders/epay/return", controller.AllergyOrderEpayReturn)
+		apiRouter.GET("/orders/epay/return", controller.AllergyOrderEpayReturn)
+
+		allergyAdminRoute := apiRouter.Group("/admin")
+		allergyAdminRoute.Use(middleware.AdminAuth())
+		{
+			allergyAdminRoute.GET("/orders", controller.ListAdminAllergyOrders)
+			allergyAdminRoute.GET("/orders/:id", controller.GetAdminAllergyOrderDetail)
+			allergyAdminRoute.PATCH("/orders/:id/status", controller.UpdateAdminAllergyOrderStatus)
+			allergyAdminRoute.POST("/orders/:id/kit", controller.UpsertAdminAllergyOrderKit)
+			allergyAdminRoute.POST("/orders/:id/sample-received", controller.MarkAdminAllergySampleReceived)
+			allergyAdminRoute.POST("/orders/:id/report", controller.UploadAdminAllergyOrderReport)
+			allergyAdminRoute.POST("/reports/:id/publish", controller.PublishAdminAllergyReport)
+			allergyAdminRoute.POST("/reports/:id/send-email", controller.SendAdminAllergyReportEmail)
+			allergyAdminRoute.GET("/reports/:id/delivery-logs", controller.ListAdminAllergyReportDeliveryLogs)
+		}
 
 		userRoute := apiRouter.Group("/user")
 		{
