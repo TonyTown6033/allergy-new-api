@@ -20,28 +20,48 @@ import (
 type allergyAuthActionResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
+	Code    string `json:"code"`
 }
 
-type allergyLoginResponse struct {
-	Success   bool `json:"success"`
-	Token     string
-	Email     string
-	IsNewUser bool `json:"is_new_user"`
-	User      struct {
-		ID    int    `json:"id"`
-		Email string `json:"email"`
-	} `json:"user"`
+type allergyMemberUserResponse struct {
+	ID       int    `json:"id"`
+	Username string `json:"username"`
+	Email    string `json:"email"`
+}
+
+type allergyMemberProfileResponse struct {
+	ID              int64  `json:"id"`
+	Username        string `json:"username"`
+	Email           string `json:"email"`
+	Nickname        string `json:"nickname"`
+	Phone           string `json:"phone"`
+	Status          string `json:"status"`
+	EmailVerified   bool   `json:"emailVerified"`
+	EmailVerifiedAt string `json:"emailVerifiedAt"`
+}
+
+type allergyMemberPayload struct {
+	User    allergyMemberUserResponse    `json:"user"`
+	Profile allergyMemberProfileResponse `json:"profile"`
+}
+
+type allergyAuthData struct {
+	Token string `json:"token"`
+	allergyMemberPayload
+}
+
+type allergyAuthResponse struct {
+	Success bool            `json:"success"`
+	Message string          `json:"message"`
+	Code    string          `json:"code"`
+	Token   string          `json:"token"`
+	Data    allergyAuthData `json:"data"`
 }
 
 type allergyMeResponse struct {
-	Success bool   `json:"success"`
-	Email   string `json:"email"`
-	User    struct {
-		ID       int    `json:"id"`
-		Email    string `json:"email"`
-		Nickname string `json:"nickname"`
-		Phone    string `json:"phone"`
-	} `json:"user"`
+	Success bool                 `json:"success"`
+	Message string               `json:"message"`
+	Data    allergyMemberPayload `json:"data"`
 }
 
 type allergyHeroResponse struct {
@@ -100,8 +120,11 @@ func setupAllergyControllerTest(t *testing.T) (*gorm.DB, *gin.Engine) {
 	engine.GET("/api/products", GetAllergyProducts)
 
 	authGroup := engine.Group("/api/auth")
-	authGroup.POST("/send-code", SendAllergyLoginCode)
+	authGroup.POST("/register/send-code", SendAllergyRegisterCode)
+	authGroup.POST("/register", RegisterAllergyMember)
 	authGroup.POST("/login", LoginAllergyMember)
+	authGroup.POST("/forgot-password/send-code", SendAllergyPasswordResetCode)
+	authGroup.POST("/forgot-password/reset", ResetAllergyMemberPassword)
 	authGroup.GET("/me", middleware.AllergyMemberAuth(), GetAllergyAuthMe)
 	authGroup.POST("/logout", middleware.AllergyMemberAuth(), LogoutAllergyMember)
 	authGroup.PATCH("/profile", middleware.AllergyMemberAuth(), UpdateAllergyProfile)
@@ -153,6 +176,84 @@ func decodeAllergyJSON[T any](t *testing.T, recorder *httptest.ResponseRecorder)
 	return result
 }
 
+func seedAllergyCode(t *testing.T, db *gorm.DB, email string, purpose string, rawCode string) {
+	t.Helper()
+
+	codeHash, err := common.Password2Hash(rawCode)
+	if err != nil {
+		t.Fatalf("failed to hash code: %v", err)
+	}
+	record := model.EmailLoginCodeStore{
+		Email:     model.NormalizeEmail(email),
+		Purpose:   purpose,
+		CodeHash:  codeHash,
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+		CreatedAt: time.Now(),
+	}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatalf("failed to seed code: %v", err)
+	}
+}
+
+func seedAllergyMemberUser(t *testing.T, db *gorm.DB, username string, email string, password string, profileStatus string, emailVerified bool) *model.User {
+	t.Helper()
+
+	passwordHash, err := common.Password2Hash(password)
+	if err != nil {
+		t.Fatalf("failed to hash password: %v", err)
+	}
+	user := &model.User{
+		Username:    username,
+		Password:    passwordHash,
+		DisplayName: username,
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Email:       model.NormalizeEmail(email),
+		Group:       "default",
+		AffCode:     strings.ToUpper(common.GetRandomString(4)),
+	}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+
+	profile := &model.MemberProfile{
+		UserID:   user.Id,
+		Status:   profileStatus,
+		Nickname: username,
+	}
+	if emailVerified {
+		now := time.Now()
+		profile.EmailVerifiedAt = &now
+	}
+	if err := db.Create(profile).Error; err != nil {
+		t.Fatalf("failed to create member profile: %v", err)
+	}
+	return user
+}
+
+func seedAllergyAdminUser(t *testing.T, db *gorm.DB, username string, email string, password string) *model.User {
+	t.Helper()
+
+	passwordHash, err := common.Password2Hash(password)
+	if err != nil {
+		t.Fatalf("failed to hash password: %v", err)
+	}
+	user := &model.User{
+		Username:    username,
+		Password:    passwordHash,
+		DisplayName: username,
+		Role:        common.RoleAdminUser,
+		Status:      common.UserStatusEnabled,
+		Email:       model.NormalizeEmail(email),
+		Group:       "default",
+		AffCode:     strings.ToUpper(common.GetRandomString(4)),
+	}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatalf("failed to create admin user: %v", err)
+	}
+	return user
+}
+
 func TestGetAllergyHeroFallsBackToDefaultContent(t *testing.T) {
 	_, engine := setupAllergyControllerTest(t)
 
@@ -189,10 +290,10 @@ func TestGetAllergyProductsUsesOptionJSONWhenConfigured(t *testing.T) {
 	}
 }
 
-func TestSendAllergyLoginCodeCreatesDatabaseRecord(t *testing.T) {
+func TestSendAllergyRegisterCodeCreatesDatabaseRecord(t *testing.T) {
 	db, engine := setupAllergyControllerTest(t)
 
-	recorder := performAllergyRequest(t, engine, http.MethodPost, "/api/auth/send-code", map[string]any{
+	recorder := performAllergyRequest(t, engine, http.MethodPost, "/api/auth/register/send-code", map[string]any{
 		"email": "member@example.com",
 	}, nil)
 	if recorder.Code != http.StatusOK {
@@ -205,8 +306,8 @@ func TestSendAllergyLoginCodeCreatesDatabaseRecord(t *testing.T) {
 	}
 
 	var record model.EmailLoginCodeStore
-	if err := db.Where("email = ? AND purpose = ?", "member@example.com", "login").First(&record).Error; err != nil {
-		t.Fatalf("expected login code record to be created: %v", err)
+	if err := db.Where("email = ? AND purpose = ?", "member@example.com", model.AllergyRegisterVerifyCodePurpose).First(&record).Error; err != nil {
+		t.Fatalf("expected register code record to be created: %v", err)
 	}
 	if record.CodeHash == "" {
 		t.Fatalf("expected code hash to be stored")
@@ -219,46 +320,39 @@ func TestSendAllergyLoginCodeCreatesDatabaseRecord(t *testing.T) {
 	}
 }
 
-func TestAllergyMemberLoginLifecycleCreatesSessionAndSupportsMeLogout(t *testing.T) {
+func TestAllergyMemberRegisterLifecycleCreatesSessionAndSupportsMeLogout(t *testing.T) {
 	db, engine := setupAllergyControllerTest(t)
 
-	codeHash, err := common.Password2Hash("123456")
-	if err != nil {
-		t.Fatalf("failed to hash login code: %v", err)
-	}
-	loginCode := model.EmailLoginCodeStore{
-		Email:     "member@example.com",
-		Purpose:   "login",
-		CodeHash:  codeHash,
-		ExpiresAt: time.Now().Add(5 * time.Minute),
-		CreatedAt: time.Now(),
-	}
-	if err := db.Create(&loginCode).Error; err != nil {
-		t.Fatalf("failed to seed login code: %v", err)
-	}
+	seedAllergyCode(t, db, "member@example.com", model.AllergyRegisterVerifyCodePurpose, "123456")
 
-	loginRecorder := performAllergyRequest(t, engine, http.MethodPost, "/api/auth/login", map[string]any{
-		"email": "member@example.com",
-		"code":  "123456",
+	registerRecorder := performAllergyRequest(t, engine, http.MethodPost, "/api/auth/register", map[string]any{
+		"email":           "member@example.com",
+		"code":            "123456",
+		"username":        "member_user",
+		"password":        "Password123",
+		"confirmPassword": "Password123",
 	}, nil)
-	if loginRecorder.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", loginRecorder.Code)
+	if registerRecorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", registerRecorder.Code)
 	}
 
-	loginResponse := decodeAllergyJSON[allergyLoginResponse](t, loginRecorder)
-	if !loginResponse.Success {
-		t.Fatalf("expected success response, got body: %s", loginRecorder.Body.String())
+	registerResponse := decodeAllergyJSON[allergyAuthResponse](t, registerRecorder)
+	if !registerResponse.Success {
+		t.Fatalf("expected success response, got body: %s", registerRecorder.Body.String())
 	}
-	if loginResponse.Token == "" {
+	if registerResponse.Token == "" || registerResponse.Data.Token == "" {
 		t.Fatalf("expected session token to be returned")
 	}
-	if loginResponse.Email != "member@example.com" {
-		t.Fatalf("expected response email to match login email, got %q", loginResponse.Email)
+	if registerResponse.Token != registerResponse.Data.Token {
+		t.Fatalf("expected top-level token and data token to match")
 	}
 
 	var user model.User
 	if err := db.Where("email = ?", "member@example.com").First(&user).Error; err != nil {
 		t.Fatalf("expected member user to be created: %v", err)
+	}
+	if user.Username != "member_user" {
+		t.Fatalf("expected username member_user, got %q", user.Username)
 	}
 	if user.Role != common.RoleCommonUser {
 		t.Fatalf("expected common user role, got %d", user.Role)
@@ -271,12 +365,15 @@ func TestAllergyMemberLoginLifecycleCreatesSessionAndSupportsMeLogout(t *testing
 	if err := db.Where("user_id = ?", user.Id).First(&profile).Error; err != nil {
 		t.Fatalf("expected member profile to be created: %v", err)
 	}
+	if profile.EmailVerifiedAt == nil {
+		t.Fatalf("expected email_verified_at to be set")
+	}
 
 	var session model.MemberSession
 	if err := db.Where("user_id = ?", user.Id).First(&session).Error; err != nil {
 		t.Fatalf("expected member session to be created: %v", err)
 	}
-	if session.TokenHash == "" || session.TokenHash == loginResponse.Token {
+	if session.TokenHash == "" || session.TokenHash == registerResponse.Token {
 		t.Fatalf("expected token hash to be stored instead of raw token")
 	}
 	if session.RevokedAt != nil {
@@ -284,14 +381,14 @@ func TestAllergyMemberLoginLifecycleCreatesSessionAndSupportsMeLogout(t *testing
 	}
 
 	var usedCode model.EmailLoginCodeStore
-	if err := db.First(&usedCode, loginCode.ID).Error; err != nil {
-		t.Fatalf("failed to reload login code: %v", err)
+	if err := db.Where("email = ? AND purpose = ?", "member@example.com", model.AllergyRegisterVerifyCodePurpose).Order("id desc").First(&usedCode).Error; err != nil {
+		t.Fatalf("failed to reload register code: %v", err)
 	}
 	if usedCode.UsedAt == nil {
-		t.Fatalf("expected login code to be marked as used")
+		t.Fatalf("expected register code to be marked as used")
 	}
 
-	authHeader := map[string]string{"Authorization": "Bearer " + loginResponse.Token}
+	authHeader := map[string]string{"Authorization": "Bearer " + registerResponse.Token}
 	meRecorder := performAllergyRequest(t, engine, http.MethodGet, "/api/auth/me", nil, authHeader)
 	if meRecorder.Code != http.StatusOK {
 		t.Fatalf("expected status 200 for me, got %d", meRecorder.Code)
@@ -301,8 +398,20 @@ func TestAllergyMemberLoginLifecycleCreatesSessionAndSupportsMeLogout(t *testing
 	if !meResponse.Success {
 		t.Fatalf("expected me to succeed, got body: %s", meRecorder.Body.String())
 	}
-	if meResponse.User.ID != user.Id || meResponse.User.Email != user.Email {
-		t.Fatalf("unexpected me response payload: %+v", meResponse.User)
+	if meResponse.Data.User.ID != user.Id || meResponse.Data.User.Email != user.Email {
+		t.Fatalf("unexpected me response payload: %+v", meResponse.Data.User)
+	}
+	if !meResponse.Data.Profile.EmailVerified {
+		t.Fatalf("expected me response to expose verified email state")
+	}
+
+	patchRec := performAllergyRequest(t, engine, http.MethodPatch, "/api/auth/profile", allergyUpdateProfileRequest{
+		Nickname: "小花",
+		Phone:    "13900139000",
+	}, authHeader)
+	patchResp := decodeAllergyJSON[allergyAuthActionResponse](t, patchRec)
+	if !patchResp.Success {
+		t.Fatalf("expected profile update to succeed: %s", patchRec.Body.String())
 	}
 
 	logoutRecorder := performAllergyRequest(t, engine, http.MethodPost, "/api/auth/logout", nil, authHeader)
@@ -320,184 +429,145 @@ func TestAllergyMemberLoginLifecycleCreatesSessionAndSupportsMeLogout(t *testing
 	}
 }
 
-func TestAllergyMemberLoginAllowsLocalDevCredential(t *testing.T) {
+func TestAllergyPasswordLoginSupportsUsernameAndEmailAndRejectsInvalidMemberStates(t *testing.T) {
 	db, engine := setupAllergyControllerTest(t)
 
-	loginRecorder := performAllergyRequest(t, engine, http.MethodPost, "http://localhost:3000/api/auth/login", map[string]any{
-		"email": "member@example.com",
-		"code":  "123456",
+	seedAllergyMemberUser(t, db, "member_user", "member@example.com", "Password123", "active", true)
+
+	usernameLogin := performAllergyRequest(t, engine, http.MethodPost, "/api/auth/login", map[string]any{
+		"identifier": "member_user",
+		"password":   "Password123",
 	}, nil)
-	if loginRecorder.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d body=%s", loginRecorder.Code, loginRecorder.Body.String())
+	usernameResponse := decodeAllergyJSON[allergyAuthResponse](t, usernameLogin)
+	if !usernameResponse.Success || usernameResponse.Token == "" {
+		t.Fatalf("expected username login to succeed, got body=%s", usernameLogin.Body.String())
 	}
 
-	loginResponse := decodeAllergyJSON[allergyLoginResponse](t, loginRecorder)
-	if !loginResponse.Success || loginResponse.Token == "" {
-		t.Fatalf("expected localhost dev credential to login successfully, got body=%s", loginRecorder.Body.String())
-	}
-
-	var user model.User
-	if err := db.Where("email = ?", "member@example.com").First(&user).Error; err != nil {
-		t.Fatalf("expected dev login to create member user: %v", err)
-	}
-
-	var codeCount int64
-	if err := db.Model(&model.EmailLoginCodeStore{}).Where("email = ?", "member@example.com").Count(&codeCount).Error; err != nil {
-		t.Fatalf("failed to count login codes: %v", err)
-	}
-	if codeCount != 0 {
-		t.Fatalf("expected localhost dev login to bypass stored verification code, got %d records", codeCount)
-	}
-}
-
-func TestAllergyMemberLoginRejectsDevCredentialOutsideLocalhost(t *testing.T) {
-	_, engine := setupAllergyControllerTest(t)
-
-	loginRecorder := performAllergyRequest(t, engine, http.MethodPost, "/api/auth/login", map[string]any{
-		"email": "member@example.com",
-		"code":  "123456",
+	emailLogin := performAllergyRequest(t, engine, http.MethodPost, "/api/auth/login", map[string]any{
+		"identifier": "member@example.com",
+		"password":   "Password123",
 	}, nil)
-	if loginRecorder.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d body=%s", loginRecorder.Code, loginRecorder.Body.String())
+	emailResponse := decodeAllergyJSON[allergyAuthResponse](t, emailLogin)
+	if !emailResponse.Success || emailResponse.Token == "" {
+		t.Fatalf("expected email login to succeed, got body=%s", emailLogin.Body.String())
 	}
 
-	loginResponse := decodeAllergyJSON[allergyLoginResponse](t, loginRecorder)
-	if loginResponse.Success {
-		t.Fatalf("expected dev credential to be rejected outside localhost requests")
-	}
-}
-
-func TestAllergyLoginReturnsIsNewUserFlag(t *testing.T) {
-	db, engine := setupAllergyControllerTest(t)
-
-	// 新用户：邮箱不存在 → is_new_user=true
-	codeHash, _ := common.Password2Hash("111111")
-	db.Create(&model.EmailLoginCodeStore{
-		Email: "newbie@example.com", Purpose: "login",
-		CodeHash: codeHash, ExpiresAt: time.Now().Add(5 * time.Minute), CreatedAt: time.Now(),
-	})
-
-	rec := performAllergyRequest(t, engine, http.MethodPost, "/api/auth/login", map[string]any{
-		"email": "newbie@example.com", "code": "111111",
+	seedAllergyAdminUser(t, db, "admin_user", "admin@example.com", "Password123")
+	adminLogin := performAllergyRequest(t, engine, http.MethodPost, "/api/auth/login", map[string]any{
+		"identifier": "admin@example.com",
+		"password":   "Password123",
 	}, nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	adminResponse := decodeAllergyJSON[allergyAuthActionResponse](t, adminLogin)
+	if adminResponse.Success {
+		t.Fatalf("expected admin account to be rejected")
 	}
-	resp := decodeAllergyJSON[allergyLoginResponse](t, rec)
-	if !resp.Success {
-		t.Fatalf("expected success, got %s", rec.Body.String())
-	}
-	if !resp.IsNewUser {
-		t.Fatalf("expected is_new_user=true for first-time login, got false")
-	}
-	firstToken := resp.Token
 
-	// 老用户：同邮箱再次登录 → is_new_user=false
-	codeHash2, _ := common.Password2Hash("222222")
-	db.Create(&model.EmailLoginCodeStore{
-		Email: "newbie@example.com", Purpose: "login",
-		CodeHash: codeHash2, ExpiresAt: time.Now().Add(5 * time.Minute), CreatedAt: time.Now(),
-	})
-	rec2 := performAllergyRequest(t, engine, http.MethodPost, "/api/auth/login", map[string]any{
-		"email": "newbie@example.com", "code": "222222",
+	seedAllergyMemberUser(t, db, "disabled_user", "disabled@example.com", "Password123", "disabled", true)
+	disabledLogin := performAllergyRequest(t, engine, http.MethodPost, "/api/auth/login", map[string]any{
+		"identifier": "disabled_user",
+		"password":   "Password123",
 	}, nil)
-	resp2 := decodeAllergyJSON[allergyLoginResponse](t, rec2)
-	if resp2.IsNewUser {
-		t.Fatalf("expected is_new_user=false for returning user")
+	disabledResponse := decodeAllergyJSON[allergyAuthActionResponse](t, disabledLogin)
+	if disabledResponse.Success {
+		t.Fatalf("expected disabled member account to be rejected")
 	}
-	if resp2.Token == firstToken {
-		t.Fatalf("expected different session token on second login")
-	}
-}
 
-func TestAllergyUpdateProfileSavesNicknameAndPhone(t *testing.T) {
-	db, engine := setupAllergyControllerTest(t)
-
-	// 先登录拿 token
-	codeHash, _ := common.Password2Hash("999999")
-	db.Create(&model.EmailLoginCodeStore{
-		Email: "profile@example.com", Purpose: "login",
-		CodeHash: codeHash, ExpiresAt: time.Now().Add(5 * time.Minute), CreatedAt: time.Now(),
-	})
-	loginRec := performAllergyRequest(t, engine, http.MethodPost, "/api/auth/login", map[string]any{
-		"email": "profile@example.com", "code": "999999",
+	seedAllergyMemberUser(t, db, "unverified_user", "unverified@example.com", "Password123", "active", false)
+	unverifiedLogin := performAllergyRequest(t, engine, http.MethodPost, "/api/auth/login", map[string]any{
+		"identifier": "unverified_user",
+		"password":   "Password123",
 	}, nil)
-	loginResp := decodeAllergyJSON[allergyLoginResponse](t, loginRec)
-	if !loginResp.Success {
-		t.Fatalf("login failed: %s", loginRec.Body.String())
-	}
-	authHeader := map[string]string{"Authorization": "Bearer " + loginResp.Token}
-
-	// 更新 profile
-	patchRec := performAllergyRequest(t, engine, http.MethodPatch, "/api/auth/profile", allergyUpdateProfileRequest{
-		Nickname: "小花",
-		Phone:    "13900139000",
-	}, authHeader)
-	if patchRec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%s", patchRec.Code, patchRec.Body.String())
-	}
-	patchResp := decodeAllergyJSON[allergyAuthActionResponse](t, patchRec)
-	if !patchResp.Success {
-		t.Fatalf("expected profile update to succeed: %s", patchRec.Body.String())
+	unverifiedResponse := decodeAllergyJSON[allergyAuthActionResponse](t, unverifiedLogin)
+	if unverifiedResponse.Success {
+		t.Fatalf("expected unverified member account to be rejected")
 	}
 
-	// 验证 /me 返回更新后的资料
-	meRec := performAllergyRequest(t, engine, http.MethodGet, "/api/auth/me", nil, authHeader)
-	meResp := decodeAllergyJSON[allergyMeResponse](t, meRec)
-	if meResp.User.Nickname != "小花" {
-		t.Fatalf("expected nickname '小花', got %q", meResp.User.Nickname)
-	}
-	if meResp.User.Phone != "13900139000" {
-		t.Fatalf("expected phone '13900139000', got %q", meResp.User.Phone)
-	}
-
-	// 验证数据库里的 member_profile 也更新了
-	var dbProfile model.MemberProfile
-	db.Where("user_id = ?", loginResp.User.ID).First(&dbProfile)
-	if dbProfile.Nickname != "小花" || dbProfile.Phone != "13900139000" {
-		t.Fatalf("expected profile in DB to be updated, got nickname=%q phone=%q",
-			dbProfile.Nickname, dbProfile.Phone)
-	}
-}
-
-func TestSendAllergyLoginCodeRejectsAdminEmail(t *testing.T) {
-	db, engine := setupAllergyControllerTest(t)
-
-	passwordHash, err := common.Password2Hash("admin-password")
+	passwordHash, err := common.Password2Hash("Password123")
 	if err != nil {
 		t.Fatalf("failed to hash password: %v", err)
 	}
-	admin := model.User{
-		Username:    "allergy-admin",
+	noProfileUser := &model.User{
+		Username:    "no_profile_user",
 		Password:    passwordHash,
-		DisplayName: "Allergy Admin",
-		Role:        common.RoleAdminUser,
+		DisplayName: "no_profile_user",
+		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
-		Email:       "admin@example.com",
+		Email:       "no-profile@example.com",
 		Group:       "default",
-		AffCode:     "ADM1",
+		AffCode:     strings.ToUpper(common.GetRandomString(4)),
 	}
-	if err := db.Create(&admin).Error; err != nil {
-		t.Fatalf("failed to create admin user: %v", err)
+	if err := db.Create(noProfileUser).Error; err != nil {
+		t.Fatalf("failed to create no-profile user: %v", err)
 	}
-
-	recorder := performAllergyRequest(t, engine, http.MethodPost, "/api/auth/send-code", map[string]any{
-		"email": "admin@example.com",
+	noProfileLogin := performAllergyRequest(t, engine, http.MethodPost, "/api/auth/login", map[string]any{
+		"identifier": "no_profile_user",
+		"password":   "Password123",
 	}, nil)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", recorder.Code)
+	noProfileResponse := decodeAllergyJSON[allergyAuthActionResponse](t, noProfileLogin)
+	if noProfileResponse.Success {
+		t.Fatalf("expected user without member profile to be rejected")
+	}
+}
+
+func TestAllergyPasswordResetLifecycleSendsCodeResetsPasswordAndRevokesSessions(t *testing.T) {
+	db, engine := setupAllergyControllerTest(t)
+
+	user := seedAllergyMemberUser(t, db, "reset_user", "reset@example.com", "Password123", "active", true)
+	token, _, err := model.CreateMemberSession(user.Id, model.AllergyMemberClientWeb, "test-agent", "127.0.0.1", time.Hour)
+	if err != nil {
+		t.Fatalf("failed to create seed session: %v", err)
 	}
 
-	response := decodeAllergyJSON[allergyAuthActionResponse](t, recorder)
-	if response.Success {
-		t.Fatalf("expected admin email to be rejected")
+	sendRecorder := performAllergyRequest(t, engine, http.MethodPost, "/api/auth/forgot-password/send-code", map[string]any{
+		"email": "reset@example.com",
+	}, nil)
+	sendResponse := decodeAllergyJSON[allergyAuthActionResponse](t, sendRecorder)
+	if !sendResponse.Success {
+		t.Fatalf("expected send reset code to succeed, got body=%s", sendRecorder.Body.String())
 	}
 
 	var count int64
-	if err := db.Model(&model.EmailLoginCodeStore{}).Where("email = ?", "admin@example.com").Count(&count).Error; err != nil {
-		t.Fatalf("failed to count login codes: %v", err)
+	if err := db.Model(&model.EmailLoginCodeStore{}).Where("email = ? AND purpose = ?", "reset@example.com", model.AllergyPasswordResetCodePurpose).Count(&count).Error; err != nil {
+		t.Fatalf("failed to count reset codes: %v", err)
 	}
-	if count != 0 {
-		t.Fatalf("expected no login code to be created for admin email, got %d", count)
+	if count == 0 {
+		t.Fatalf("expected password reset code record to be created")
+	}
+
+	seedAllergyCode(t, db, "reset@example.com", model.AllergyPasswordResetCodePurpose, "654321")
+	resetRecorder := performAllergyRequest(t, engine, http.MethodPost, "/api/auth/forgot-password/reset", map[string]any{
+		"email":           "reset@example.com",
+		"code":            "654321",
+		"password":        "NewPassword123",
+		"confirmPassword": "NewPassword123",
+	}, nil)
+	resetResponse := decodeAllergyJSON[allergyAuthActionResponse](t, resetRecorder)
+	if !resetResponse.Success {
+		t.Fatalf("expected password reset to succeed, got body=%s", resetRecorder.Body.String())
+	}
+
+	oldLogin := performAllergyRequest(t, engine, http.MethodPost, "/api/auth/login", map[string]any{
+		"identifier": "reset_user",
+		"password":   "Password123",
+	}, nil)
+	oldLoginResponse := decodeAllergyJSON[allergyAuthActionResponse](t, oldLogin)
+	if oldLoginResponse.Success {
+		t.Fatalf("expected old password to be rejected after reset")
+	}
+
+	newLogin := performAllergyRequest(t, engine, http.MethodPost, "/api/auth/login", map[string]any{
+		"identifier": "reset@example.com",
+		"password":   "NewPassword123",
+	}, nil)
+	newLoginResponse := decodeAllergyJSON[allergyAuthResponse](t, newLogin)
+	if !newLoginResponse.Success || newLoginResponse.Token == "" {
+		t.Fatalf("expected new password login to succeed, got body=%s", newLogin.Body.String())
+	}
+
+	afterResetMe := performAllergyRequest(t, engine, http.MethodGet, "/api/auth/me", nil, map[string]string{
+		"Authorization": "Bearer " + token,
+	})
+	if afterResetMe.Code != http.StatusUnauthorized {
+		t.Fatalf("expected pre-reset session to be revoked, got %d body=%s", afterResetMe.Code, afterResetMe.Body.String())
 	}
 }

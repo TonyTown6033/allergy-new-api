@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -200,6 +201,157 @@ func TestAllergyBusinessModelsCanPersistCoreWorkflowRecords(t *testing.T) {
 	}
 	if persistedOrder.PaymentStatus != "paid" || persistedOrder.OrderStatus != "paid" {
 		t.Fatalf("unexpected order status after reload: %+v", persistedOrder)
+	}
+}
+
+func TestValidateAllergyMemberUserRejectsInvalidStates(t *testing.T) {
+	db := setupAllergyModelTestDB(t)
+
+	if err := db.AutoMigrate(&User{}, &MemberProfile{}); err != nil {
+		t.Fatalf("failed to migrate auth models: %v", err)
+	}
+
+	passwordHash, err := common.Password2Hash("member-password")
+	if err != nil {
+		t.Fatalf("failed to hash password: %v", err)
+	}
+
+	createUser := func(username string, email string, role int, status int) *User {
+		t.Helper()
+		user := &User{
+			Username:    username,
+			Password:    passwordHash,
+			DisplayName: username,
+			Role:        role,
+			Status:      status,
+			Email:       email,
+			Group:       "default",
+			AffCode:     strings.ToUpper(common.GetRandomString(4)),
+		}
+		if err := db.Create(user).Error; err != nil {
+			t.Fatalf("failed to create user: %v", err)
+		}
+		return user
+	}
+
+	verifiedAt := time.Now()
+	activeUser := createUser("active_member", "active@example.com", common.RoleCommonUser, common.UserStatusEnabled)
+	if err := db.Create(&MemberProfile{
+		UserID:          activeUser.Id,
+		Status:          memberProfileStatusActive,
+		EmailVerifiedAt: &verifiedAt,
+	}).Error; err != nil {
+		t.Fatalf("failed to create active profile: %v", err)
+	}
+
+	profile, err := ValidateAllergyMemberUser(activeUser)
+	if err != nil {
+		t.Fatalf("expected active verified member to pass validation: %v", err)
+	}
+	if profile == nil || profile.UserID != activeUser.Id {
+		t.Fatalf("unexpected validated profile: %+v", profile)
+	}
+
+	adminUser := createUser("admin_member", "admin@example.com", common.RoleAdminUser, common.UserStatusEnabled)
+	if _, err := ValidateAllergyMemberUser(adminUser); !errors.Is(err, ErrAllergyAdminAccountNotAllowed) {
+		t.Fatalf("expected admin account rejection, got %v", err)
+	}
+
+	noProfileUser := createUser("no_profile", "no-profile@example.com", common.RoleCommonUser, common.UserStatusEnabled)
+	if _, err := ValidateAllergyMemberUser(noProfileUser); !errors.Is(err, ErrAllergyMemberProfileRequired) {
+		t.Fatalf("expected no-profile rejection, got %v", err)
+	}
+
+	disabledUser := createUser("disabled_member", "disabled@example.com", common.RoleCommonUser, common.UserStatusDisabled)
+	if err := db.Create(&MemberProfile{
+		UserID:          disabledUser.Id,
+		Status:          memberProfileStatusActive,
+		EmailVerifiedAt: &verifiedAt,
+	}).Error; err != nil {
+		t.Fatalf("failed to create disabled user profile: %v", err)
+	}
+	if _, err := ValidateAllergyMemberUser(disabledUser); !errors.Is(err, ErrAllergyMemberDisabled) {
+		t.Fatalf("expected disabled user rejection, got %v", err)
+	}
+
+	unverifiedUser := createUser("unverified_member", "unverified@example.com", common.RoleCommonUser, common.UserStatusEnabled)
+	if err := db.Create(&MemberProfile{
+		UserID: unverifiedUser.Id,
+		Status: memberProfileStatusActive,
+	}).Error; err != nil {
+		t.Fatalf("failed to create unverified user profile: %v", err)
+	}
+	if _, err := ValidateAllergyMemberUser(unverifiedUser); !errors.Is(err, ErrAllergyEmailNotVerified) {
+		t.Fatalf("expected unverified user rejection, got %v", err)
+	}
+
+	suspendedMember := createUser("suspended_member", "suspended@example.com", common.RoleCommonUser, common.UserStatusEnabled)
+	if err := db.Create(&MemberProfile{
+		UserID:          suspendedMember.Id,
+		Status:          memberProfileStatusDisabled,
+		EmailVerifiedAt: &verifiedAt,
+	}).Error; err != nil {
+		t.Fatalf("failed to create suspended profile: %v", err)
+	}
+	if _, err := ValidateAllergyMemberUser(suspendedMember); !errors.Is(err, ErrAllergyMemberDisabled) {
+		t.Fatalf("expected disabled profile rejection, got %v", err)
+	}
+}
+
+func TestAuthenticateMemberSessionRequiresVerifiedMemberProfile(t *testing.T) {
+	db := setupAllergyModelTestDB(t)
+
+	if err := db.AutoMigrate(&User{}, &MemberProfile{}, &MemberSession{}); err != nil {
+		t.Fatalf("failed to migrate session auth models: %v", err)
+	}
+
+	passwordHash, err := common.Password2Hash("member-password")
+	if err != nil {
+		t.Fatalf("failed to hash password: %v", err)
+	}
+	user := &User{
+		Username:    "session_member",
+		Password:    passwordHash,
+		DisplayName: "session_member",
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Email:       "session@example.com",
+		Group:       "default",
+		AffCode:     strings.ToUpper(common.GetRandomString(4)),
+	}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatalf("failed to create session user: %v", err)
+	}
+
+	verifiedAt := time.Now()
+	profile := &MemberProfile{
+		UserID:          user.Id,
+		Status:          memberProfileStatusActive,
+		EmailVerifiedAt: &verifiedAt,
+	}
+	if err := db.Create(profile).Error; err != nil {
+		t.Fatalf("failed to create session profile: %v", err)
+	}
+
+	token, session, err := CreateMemberSession(user.Id, AllergyMemberClientWeb, "test-agent", "127.0.0.1", time.Hour)
+	if err != nil {
+		t.Fatalf("failed to create member session: %v", err)
+	}
+
+	authenticatedSession, authenticatedUser, err := AuthenticateMemberSession(token)
+	if err != nil {
+		t.Fatalf("expected session to authenticate, got %v", err)
+	}
+	if authenticatedSession.ID != session.ID || authenticatedUser.Id != user.Id {
+		t.Fatalf("unexpected session auth result: session=%+v user=%+v", authenticatedSession, authenticatedUser)
+	}
+
+	if err := db.Model(profile).Update("email_verified_at", nil).Error; err != nil {
+		t.Fatalf("failed to clear email verification: %v", err)
+	}
+
+	if _, _, err := AuthenticateMemberSession(token); !errors.Is(err, ErrAllergyUnauthorized) {
+		t.Fatalf("expected session auth to fail after email verification cleared, got %v", err)
 	}
 }
 
