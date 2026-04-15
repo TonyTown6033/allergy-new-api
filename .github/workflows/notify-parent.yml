@@ -3,7 +3,6 @@ name: Notify parent repo on push
 on:
   push:
     branches:
-      - codex
       - main
 
 jobs:
