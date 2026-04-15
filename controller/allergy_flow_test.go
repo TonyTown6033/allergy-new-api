@@ -404,7 +404,12 @@ func seedAllergyMemberSession(t *testing.T, db *gorm.DB, email string) (*model.U
 	if err := db.Create(user).Error; err != nil {
 		t.Fatalf("failed to create user: %v", err)
 	}
-	if err := db.Create(&model.MemberProfile{UserID: user.Id, Status: "active"}).Error; err != nil {
+	verifiedAt := time.Now()
+	if err := db.Create(&model.MemberProfile{
+		UserID:          user.Id,
+		Status:          "active",
+		EmailVerifiedAt: &verifiedAt,
+	}).Error; err != nil {
 		t.Fatalf("failed to create member profile: %v", err)
 	}
 	token, _, err := model.CreateMemberSession(user.Id, model.AllergyMemberClientWeb, "test-agent", "127.0.0.1", time.Hour)

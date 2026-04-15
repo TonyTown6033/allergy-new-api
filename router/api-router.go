@@ -60,8 +60,11 @@ func SetApiRouter(router *gin.Engine) {
 
 		allergyAuthRoute := apiRouter.Group("/auth")
 		{
-			allergyAuthRoute.POST("/send-code", middleware.CriticalRateLimit(), controller.SendAllergyLoginCode)
+			allergyAuthRoute.POST("/register/send-code", middleware.CriticalRateLimit(), controller.SendAllergyRegisterCode)
+			allergyAuthRoute.POST("/register", middleware.CriticalRateLimit(), controller.RegisterAllergyMember)
 			allergyAuthRoute.POST("/login", middleware.CriticalRateLimit(), controller.LoginAllergyMember)
+			allergyAuthRoute.POST("/forgot-password/send-code", middleware.CriticalRateLimit(), controller.SendAllergyPasswordResetCode)
+			allergyAuthRoute.POST("/forgot-password/reset", middleware.CriticalRateLimit(), controller.ResetAllergyMemberPassword)
 			allergyAuthRoute.GET("/me", middleware.AllergyMemberAuth(), controller.GetAllergyAuthMe)
 			allergyAuthRoute.POST("/logout", middleware.AllergyMemberAuth(), controller.LogoutAllergyMember)
 			allergyAuthRoute.PATCH("/profile", middleware.AllergyMemberAuth(), controller.UpdateAllergyProfile)

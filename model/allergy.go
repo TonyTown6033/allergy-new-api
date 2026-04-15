@@ -11,25 +11,40 @@ import (
 )
 
 const (
-	AllergyLoginCodePurpose   = "login"
-	AllergyMemberClientWeb    = "web"
-	AllergyMemberSessionTTL   = 7 * 24 * time.Hour
-	memberProfileStatusActive = "active"
+	AllergyRegisterVerifyCodePurpose = "register_verify"
+	AllergyPasswordResetCodePurpose  = "password_reset"
+	AllergyMemberClientWeb           = "web"
+	AllergyMemberSessionTTL          = 7 * 24 * time.Hour
+	memberProfileStatusActive        = "active"
+	memberProfileStatusDisabled      = "disabled"
+)
+
+var (
+	ErrAllergyCodeInvalid            = errors.New("验证码错误")
+	ErrAllergyCodeExpired            = errors.New("验证码无效或已过期，请重新获取")
+	ErrAllergyAccountNotFound        = errors.New("账号不存在")
+	ErrAllergyPasswordIncorrect      = errors.New("用户名、邮箱或密码错误")
+	ErrAllergyMemberDisabled         = errors.New("会员账号已禁用")
+	ErrAllergyMemberProfileRequired  = errors.New("当前账号不是有效会员")
+	ErrAllergyEmailNotVerified       = errors.New("邮箱未验证")
+	ErrAllergyAdminAccountNotAllowed = errors.New("公共会员登录入口不可用于管理员账号")
+	ErrAllergyUnauthorized           = errors.New("登录状态无效或已过期")
 )
 
 type MemberProfile struct {
-	ID                    int64     `json:"id"`
-	UserID                int       `json:"user_id" gorm:"uniqueIndex"`
-	Phone                 string    `json:"phone" gorm:"type:varchar(32);default:''"`
-	Nickname              string    `json:"nickname" gorm:"type:varchar(64);default:''"`
-	AvatarURL             string    `json:"avatar_url" gorm:"type:varchar(512);default:''"`
-	RealName              string    `json:"real_name" gorm:"type:varchar(64);default:''"`
-	DefaultRecipientName  string    `json:"default_recipient_name" gorm:"type:varchar(64);default:''"`
-	DefaultRecipientPhone string    `json:"default_recipient_phone" gorm:"type:varchar(32);default:''"`
-	DefaultAddressJSON    string    `json:"default_address_json" gorm:"type:text"`
-	Status                string    `json:"status" gorm:"type:varchar(32);default:'active'"`
-	CreatedAt             time.Time `json:"created_at"`
-	UpdatedAt             time.Time `json:"updated_at"`
+	ID                    int64      `json:"id"`
+	UserID                int        `json:"user_id" gorm:"uniqueIndex"`
+	Phone                 string     `json:"phone" gorm:"type:varchar(32);default:''"`
+	Nickname              string     `json:"nickname" gorm:"type:varchar(64);default:''"`
+	AvatarURL             string     `json:"avatar_url" gorm:"type:varchar(512);default:''"`
+	RealName              string     `json:"real_name" gorm:"type:varchar(64);default:''"`
+	DefaultRecipientName  string     `json:"default_recipient_name" gorm:"type:varchar(64);default:''"`
+	DefaultRecipientPhone string     `json:"default_recipient_phone" gorm:"type:varchar(32);default:''"`
+	DefaultAddressJSON    string     `json:"default_address_json" gorm:"type:text"`
+	Status                string     `json:"status" gorm:"type:varchar(32);default:'active'"`
+	EmailVerifiedAt       *time.Time `json:"email_verified_at" gorm:"index"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
 }
 
 func (MemberProfile) TableName() string {
@@ -237,6 +252,46 @@ func GetUserByEmail(email string) (*User, error) {
 	return &user, nil
 }
 
+func GetUserByIdentifier(identifier string) (*User, error) {
+	identifier = strings.TrimSpace(identifier)
+	if identifier == "" {
+		return nil, ErrAllergyAccountNotFound
+	}
+	var user User
+	err := DB.Where("username = ? OR email = ?", identifier, NormalizeEmail(identifier)).First(&user).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrAllergyAccountNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
+func UserExistsByUsername(username string) (bool, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return false, nil
+	}
+	var count int64
+	if err := DB.Unscoped().Model(&User{}).Where("username = ?", username).Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func UserExistsByEmail(email string) (bool, error) {
+	email = NormalizeEmail(email)
+	if email == "" {
+		return false, nil
+	}
+	var count int64
+	if err := DB.Unscoped().Model(&User{}).Where("email = ?", email).Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 func GetMemberProfileByUserID(userID int) (*MemberProfile, error) {
 	var profile MemberProfile
 	err := DB.Where("user_id = ?", userID).First(&profile).Error
@@ -267,6 +322,81 @@ func EnsureMemberProfile(userID int) (*MemberProfile, error) {
 	return profile, nil
 }
 
+func ValidateAllergyMemberUser(user *User) (*MemberProfile, error) {
+	if user == nil {
+		return nil, ErrAllergyAccountNotFound
+	}
+	if user.Role >= common.RoleAdminUser {
+		return nil, ErrAllergyAdminAccountNotAllowed
+	}
+	if user.Status != common.UserStatusEnabled {
+		return nil, ErrAllergyMemberDisabled
+	}
+	profile, err := GetMemberProfileByUserID(user.Id)
+	if err != nil {
+		return nil, err
+	}
+	if profile == nil {
+		return nil, ErrAllergyMemberProfileRequired
+	}
+	if profile.Status != memberProfileStatusActive {
+		return nil, ErrAllergyMemberDisabled
+	}
+	if profile.EmailVerifiedAt == nil {
+		return nil, ErrAllergyEmailNotVerified
+	}
+	return profile, nil
+}
+
+func CreateAllergyMemberAccount(username string, email string, password string, verifiedAt time.Time) (*User, *MemberProfile, error) {
+	username = strings.TrimSpace(username)
+	email = NormalizeEmail(email)
+	password = strings.TrimSpace(password)
+
+	hashedPassword, err := common.Password2Hash(password)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	displayName := username
+	if displayName == "" {
+		displayName = strings.TrimSpace(strings.Split(email, "@")[0])
+	}
+	if len(displayName) > 20 {
+		displayName = displayName[:20]
+	}
+	user := &User{
+		Username:    username,
+		Password:    hashedPassword,
+		DisplayName: displayName,
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Email:       email,
+		Group:       "default",
+		AffCode:     strings.ToUpper(common.GetRandomString(4)),
+	}
+	profile := &MemberProfile{
+		Phone:           "",
+		Nickname:        "",
+		Status:          memberProfileStatusActive,
+		EmailVerifiedAt: &verifiedAt,
+	}
+
+	if err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(user).Error; err != nil {
+			return err
+		}
+		profile.UserID = user.Id
+		if err := tx.Create(profile).Error; err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		return nil, nil, err
+	}
+	return user, profile, nil
+}
+
 func CreateEmailLoginCode(email string, purpose string, rawCode string, sendIP string, ttl time.Duration) (*EmailLoginCodeStore, error) {
 	if ttl <= 0 {
 		ttl = 10 * time.Minute
@@ -295,21 +425,21 @@ func ConsumeEmailLoginCode(email string, purpose string, rawCode string) (*Email
 		Order("created_at desc").
 		First(record).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, errors.New("验证码无效或已过期，请重新获取")
+		return nil, ErrAllergyCodeExpired
 	}
 	if err != nil {
 		return nil, err
 	}
 	now := time.Now()
 	if record.UsedAt != nil || now.After(record.ExpiresAt) {
-		return nil, errors.New("验证码无效或已过期，请重新获取")
+		return nil, ErrAllergyCodeExpired
 	}
 	if !common.ValidatePasswordAndHash(strings.TrimSpace(rawCode), record.CodeHash) {
 		record.AttemptCount++
 		if updateErr := DB.Model(record).Update("attempt_count", record.AttemptCount).Error; updateErr != nil {
 			return nil, updateErr
 		}
-		return nil, errors.New("验证码错误")
+		return nil, ErrAllergyCodeInvalid
 	}
 	record.UsedAt = &now
 	if err := DB.Model(record).Updates(map[string]any{
@@ -349,29 +479,29 @@ func AuthenticateMemberSession(token string) (*MemberSession, *User, error) {
 		token = strings.TrimSpace(token[7:])
 	}
 	if token == "" {
-		return nil, nil, errors.New("登录状态无效或已过期")
+		return nil, nil, ErrAllergyUnauthorized
 	}
 	var session MemberSession
 	err := DB.Where("token_hash = ?", common.GenerateHMAC(token)).First(&session).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, nil, errors.New("登录状态无效或已过期")
+		return nil, nil, ErrAllergyUnauthorized
 	}
 	if err != nil {
 		return nil, nil, err
 	}
 	now := time.Now()
 	if session.RevokedAt != nil || now.After(session.ExpiresAt) {
-		return nil, nil, errors.New("登录状态无效或已过期")
+		return nil, nil, ErrAllergyUnauthorized
 	}
 	user, err := GetUserById(session.UserID, false)
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil, ErrAllergyUnauthorized
+		}
 		return nil, nil, err
 	}
-	if user.Status != common.UserStatusEnabled {
-		return nil, nil, errors.New("用户已被封禁")
-	}
-	if user.Role >= common.RoleAdminUser {
-		return nil, nil, errors.New("公共会员登录入口不可用于管理员账号")
+	if _, err := ValidateAllergyMemberUser(user); err != nil {
+		return nil, nil, ErrAllergyUnauthorized
 	}
 	if touchErr := DB.Model(&session).Update("last_seen_at", now).Error; touchErr == nil {
 		session.LastSeenAt = &now
@@ -386,65 +516,11 @@ func RevokeMemberSession(sessionID int64) error {
 		Update("revoked_at", &now).Error
 }
 
-func FindOrCreateAllergyMemberByEmail(email string) (*User, error) {
-	email = NormalizeEmail(email)
-	existing, err := GetUserByEmail(email)
-	if err == nil {
-		if existing.Role >= common.RoleAdminUser {
-			return nil, errors.New("后台管理员账号不能用于会员登录")
-		}
-		if existing.Status != common.UserStatusEnabled {
-			return nil, errors.New("用户已被封禁")
-		}
-		_, err = EnsureMemberProfile(existing.Id)
-		if err != nil {
-			return nil, err
-		}
-		return existing, nil
-	}
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, err
-	}
-
-	username := "al" + strings.ToLower(common.GetRandomString(10))
-	displayName := "Allergy Member"
-	if local := strings.TrimSpace(strings.Split(email, "@")[0]); local != "" {
-		displayName = local
-	}
-	if len(displayName) > 20 {
-		displayName = displayName[:20]
-	}
-	user := &User{
-		Username:    username,
-		Password:    common.GetUUID(),
-		DisplayName: displayName,
-		Role:        common.RoleCommonUser,
-		Status:      common.UserStatusEnabled,
-		Email:       email,
-		Group:       "default",
-	}
-	if err := user.Insert(0); err != nil {
-		return nil, err
-	}
-	_, err = EnsureMemberProfile(user.Id)
-	if err != nil {
-		return nil, err
-	}
-	return user, nil
-}
-
-func AllergyMemberLoginAllowed(email string) error {
-	user, err := GetUserByEmail(email)
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if user.Role >= common.RoleAdminUser {
-		return errors.New("后台管理员账号不能用于会员登录")
-	}
-	return nil
+func RevokeMemberSessionsByUserID(userID int) error {
+	now := time.Now()
+	return DB.Model(&MemberSession{}).
+		Where("user_id = ? AND revoked_at IS NULL", userID).
+		Update("revoked_at", &now).Error
 }
 
 func (session *MemberSession) DebugString() string {
