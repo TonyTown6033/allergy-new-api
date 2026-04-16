@@ -84,6 +84,26 @@ func (MemberSession) TableName() string {
 	return "member_session"
 }
 
+type AllergyServiceProduct struct {
+	ID          int64     `json:"id"`
+	ServiceCode string    `json:"service_code" gorm:"type:varchar(64);uniqueIndex"`
+	Title       string    `json:"title" gorm:"type:varchar(255)"`
+	Description string    `json:"description" gorm:"type:text"`
+	ImageURL    string    `json:"image_url" gorm:"type:varchar(1024);default:''"`
+	CTAText     string    `json:"cta_text" gorm:"type:varchar(64);default:'立即购买'"`
+	Tag         string    `json:"tag" gorm:"type:varchar(64);default:''"`
+	PriceCents  int       `json:"price_cents"`
+	Currency    string    `json:"currency" gorm:"type:varchar(16);default:'CNY'"`
+	SortOrder   int       `json:"sort_order" gorm:"default:0"`
+	Status      string    `json:"status" gorm:"type:varchar(32);index;default:'draft'"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+func (AllergyServiceProduct) TableName() string {
+	return "allergy_service_product"
+}
+
 type AllergyOrder struct {
 	ID                         int64      `json:"id"`
 	OrderNo                    string     `json:"order_no" gorm:"type:varchar(64);uniqueIndex"`

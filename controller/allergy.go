@@ -19,7 +19,6 @@ const (
 	allergyHeroOptionKey         = "AllergyHero"
 	allergyTestimonialsOptionKey = "AllergyTestimonials"
 	allergyArticlesOptionKey     = "AllergyArticles"
-	allergyProductsOptionKey     = "AllergyProducts"
 )
 
 type allergyHeroContent struct {
@@ -49,6 +48,8 @@ type allergyProductContent struct {
 	Image       string `json:"image"`
 	CTAText     string `json:"ctaText"`
 	Tag         string `json:"tag"`
+	PriceCents  int    `json:"price_cents,omitempty"`
+	Currency    string `json:"currency,omitempty"`
 }
 
 type allergySendCodeRequest struct {
@@ -105,11 +106,6 @@ var defaultAllergyArticles = []allergyArticleContent{
 	{ID: "3", Category: "专家访谈", Title: "关于燕麦与麸质的真相", Summary: "燕麦到底含不含麸质？乳糜泻儿童如何安全食用谷物？", Image: "https://picsum.photos/400/300?random=12"},
 }
 
-var defaultAllergyProducts = []allergyProductContent{
-	{ID: "allergy-test-basic", Title: "埃勒吉 APP + 居家过敏原检测包", Description: "通过一滴指尖血，精准检测100+种过敏原。APP根据结果生成个性化回避建议与营养补充方案。", Image: "https://picsum.photos/600/400?random=5", CTAText: "立即订购套装", Tag: "最受欢迎"},
-	{ID: "allergy-test-plus", Title: "专家定制食谱 + 营养补充剂", Description: "不仅仅是不吃什么，更重要的是吃什么。由营养学家设计的30天轮替食谱，帮助修复肠道屏障。", Image: "https://picsum.photos/500/500?random=7", CTAText: "定制我的食谱", Tag: "订阅制服务"},
-}
-
 func GetAllergyHero(c *gin.Context) {
 	respondAllergyContent(c, allergyHeroOptionKey, defaultAllergyHero)
 }
@@ -123,7 +119,25 @@ func GetAllergyArticles(c *gin.Context) {
 }
 
 func GetAllergyProducts(c *gin.Context) {
-	respondAllergyContent(c, allergyProductsOptionKey, defaultAllergyProducts)
+	products, err := model.ListPublishedAllergyServiceProducts()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	response := make([]allergyProductContent, 0, len(products))
+	for _, product := range products {
+		response = append(response, allergyProductContent{
+			ID:          product.ServiceCode,
+			Title:       product.Title,
+			Description: product.Description,
+			Image:       product.ImageURL,
+			CTAText:     product.CTAText,
+			Tag:         product.Tag,
+			PriceCents:  product.PriceCents,
+			Currency:    product.Currency,
+		})
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 type allergyUpdateProfileRequest struct {

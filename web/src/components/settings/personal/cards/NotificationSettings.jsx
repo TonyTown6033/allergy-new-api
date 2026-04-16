@@ -91,6 +91,7 @@ const NotificationSettings = ({
       redemption: true,
       user: true,
       allergy_orders: true,
+      allergy_service_products: true,
       setting: true,
     },
   });
@@ -176,6 +177,7 @@ const NotificationSettings = ({
         redemption: true,
         user: true,
         allergy_orders: true,
+        allergy_service_products: true,
         setting: true,
       },
     };
@@ -316,6 +318,11 @@ const NotificationSettings = ({
           key: 'allergy_orders',
           title: t('过敏订单'),
           description: t('检测履约与报告管理'),
+        },
+        {
+          key: 'allergy_service_products',
+          title: t('检测项目'),
+          description: t('检测项目上架与定价'),
         },
         {
           key: 'setting',
@@ -485,7 +492,10 @@ const NotificationSettings = ({
                     checkedText={t('开')}
                     uncheckedText={t('关')}
                     onChange={(value) =>
-                      handleFormChange('upstreamModelUpdateNotifyEnabled', value)
+                      handleFormChange(
+                        'upstreamModelUpdateNotifyEnabled',
+                        value,
+                      )
                     }
                     extraText={t(
                       '仅管理员可用。开启后，当系统定时检测全部渠道发现上游模型变更或检测异常时，将按你选择的通知方式发送汇总通知；渠道或模型过多时会自动省略部分明细。',

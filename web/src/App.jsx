@@ -51,6 +51,7 @@ import Setup from './pages/Setup';
 import SetupCheck from './components/layout/SetupCheck';
 import AllergyOrders from './pages/AllergyOrders';
 import AllergyOrderDetail from './pages/AllergyOrderDetail';
+import AllergyServiceProducts from './pages/AllergyServiceProducts';
 
 const Home = lazy(() => import('./pages/Home'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
@@ -186,6 +187,14 @@ function App() {
           element={
             <AdminRoute>
               <AllergyOrderDetail />
+            </AdminRoute>
+          }
+        />
+        <Route
+          path='/console/allergy-service-products'
+          element={
+            <AdminRoute>
+              <AllergyServiceProducts />
             </AdminRoute>
           }
         />

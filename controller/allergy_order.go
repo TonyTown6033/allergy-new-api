@@ -23,20 +23,6 @@ import (
 	"gorm.io/gorm"
 )
 
-type allergyServiceDefinition struct {
-	Code       string
-	Name       string
-	PriceCents int
-}
-
-var allergyServiceCatalog = map[string]allergyServiceDefinition{
-	"allergy-test-basic": {
-		Code:       "allergy-test-basic",
-		Name:       "埃勒吉居家过敏原检测服务",
-		PriceCents: 19900,
-	},
-}
-
 type createAllergyOrderRequest struct {
 	ServiceCode     string         `json:"service_code"`
 	RecipientName   string         `json:"recipient_name"`
@@ -95,8 +81,8 @@ func CreateAllergyOrder(c *gin.Context) {
 		common.ApiErrorMsg(c, "参数错误")
 		return
 	}
-	serviceDef, ok := allergyServiceCatalog[strings.TrimSpace(req.ServiceCode)]
-	if !ok {
+	serviceProduct, err := model.GetPublishedAllergyServiceProductByCode(req.ServiceCode)
+	if err != nil {
 		common.ApiErrorMsg(c, "服务不存在")
 		return
 	}
@@ -117,9 +103,9 @@ func CreateAllergyOrder(c *gin.Context) {
 
 	order, err := model.CreateAllergyOrder(
 		c.GetInt("id"),
-		serviceDef.Code,
-		serviceDef.Name,
-		serviceDef.PriceCents,
+		serviceProduct.ServiceCode,
+		serviceProduct.Title,
+		serviceProduct.PriceCents,
 		req.RecipientName,
 		req.RecipientPhone,
 		email,

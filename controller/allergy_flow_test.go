@@ -119,6 +119,37 @@ type allergyAdminOrderListPage struct {
 	Items    []allergyAdminOrderListItem `json:"items"`
 }
 
+type allergyAdminServiceProductItem struct {
+	ID          int64  `json:"id"`
+	ServiceCode string `json:"service_code"`
+	Title       string `json:"title"`
+	PriceCents  int    `json:"price_cents"`
+	Currency    string `json:"currency"`
+	Status      string `json:"status"`
+	SortOrder   int    `json:"sort_order"`
+}
+
+type allergyAdminServiceProductPage struct {
+	Page     int                              `json:"page"`
+	PageSize int                              `json:"page_size"`
+	Total    int                              `json:"total"`
+	Items    []allergyAdminServiceProductItem `json:"items"`
+}
+
+type allergyAdminServiceProductDetail struct {
+	ID          int64  `json:"id"`
+	ServiceCode string `json:"service_code"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	ImageURL    string `json:"image_url"`
+	CTAText     string `json:"cta_text"`
+	Tag         string `json:"tag"`
+	PriceCents  int    `json:"price_cents"`
+	Currency    string `json:"currency"`
+	SortOrder   int    `json:"sort_order"`
+	Status      string `json:"status"`
+}
+
 type allergyAdminTimelineItem struct {
 	EventType        string `json:"event_type"`
 	Title            string `json:"title"`
@@ -233,11 +264,16 @@ func setupAllergyFlowControllerTest(t *testing.T) (*gorm.DB, *gin.Engine) {
 		&model.LabReport{},
 		&model.ReportDeliveryLog{},
 		&model.OrderTimelineEvent{},
+		&model.AllergyServiceProduct{},
 	); err != nil {
 		t.Fatalf("failed to migrate allergy flow tables: %v", err)
 	}
+	if err := model.EnsureDefaultAllergyServiceProducts(); err != nil {
+		t.Fatalf("failed to seed default allergy service products: %v", err)
+	}
 
 	engine := gin.New()
+	engine.GET("/api/products", GetAllergyProducts)
 	memberRoute := engine.Group("/api")
 	memberRoute.Use(middleware.AllergyMemberAuth())
 	{
@@ -283,6 +319,12 @@ func setupAllergyFlowControllerTest(t *testing.T) (*gorm.DB, *gin.Engine) {
 		adminRoute.POST("/reports/:id/publish", PublishAdminAllergyReport)
 		adminRoute.POST("/reports/:id/send-email", SendAdminAllergyReportEmail)
 		adminRoute.GET("/reports/:id/delivery-logs", ListAdminAllergyReportDeliveryLogs)
+		adminRoute.GET("/service-products", ListAdminAllergyServiceProducts)
+		adminRoute.GET("/service-products/:id", GetAdminAllergyServiceProduct)
+		adminRoute.POST("/service-products", CreateAdminAllergyServiceProduct)
+		adminRoute.PATCH("/service-products/:id", UpdateAdminAllergyServiceProduct)
+		adminRoute.POST("/service-products/:id/publish", PublishAdminAllergyServiceProduct)
+		adminRoute.POST("/service-products/:id/archive", ArchiveAdminAllergyServiceProduct)
 	}
 
 	t.Cleanup(func() {
@@ -534,6 +576,121 @@ func TestAllergyOrderCreatePayAndCallbackFlow(t *testing.T) {
 	}
 	if !foundPaymentCompleted {
 		t.Fatalf("expected payment_completed timeline event, got %+v", timeline)
+	}
+}
+
+func TestAllergyServiceProductAdminCatalogAndOrderSnapshot(t *testing.T) {
+	db, engine := setupAllergyFlowControllerTest(t)
+	user, token := seedAllergyMemberSession(t, db, "member@example.com")
+	admin := seedAdminUser(t, db)
+	memberHeaders := map[string]string{"Authorization": "Bearer " + token}
+	adminHeaders := map[string]string{"X-Test-Admin-Id": strconv.Itoa(admin.Id)}
+
+	createProductRecorder := performFlowRequest(t, engine, http.MethodPost, "/api/admin/service-products", map[string]any{
+		"service_code": "children-panel",
+		"title":        "儿童专项过敏原检测",
+		"description":  "面向儿童常见过敏原的检测项目",
+		"image_url":    "https://cdn.example.com/product-children.jpg",
+		"cta_text":     "立即检测",
+		"tag":          "新品",
+		"price_cents":  29900,
+		"sort_order":   1,
+		"status":       "draft",
+	}, adminHeaders)
+	createdProduct := decodeAllergyAPIResponse[allergyAdminServiceProductDetail](t, createProductRecorder)
+	if createdProduct.ID == 0 || createdProduct.Status != "draft" || createdProduct.Currency != "CNY" {
+		t.Fatalf("unexpected created product: %+v", createdProduct)
+	}
+
+	initialPublicRecorder := performFlowRequest(t, engine, http.MethodGet, "/api/products", nil, nil)
+	initialPublicProducts := decodeAllergyJSON[[]allergyProductResponse](t, initialPublicRecorder)
+	for _, product := range initialPublicProducts {
+		if product.ID == "children-panel" {
+			t.Fatalf("draft product must not be publicly listed: %+v", initialPublicProducts)
+		}
+	}
+
+	publishRecorder := performFlowRequest(t, engine, http.MethodPost, fmt.Sprintf("/api/admin/service-products/%d/publish", createdProduct.ID), nil, adminHeaders)
+	publishedProduct := decodeAllergyAPIResponse[allergyAdminServiceProductDetail](t, publishRecorder)
+	if publishedProduct.Status != "published" {
+		t.Fatalf("expected published status, got %+v", publishedProduct)
+	}
+
+	publicRecorder := performFlowRequest(t, engine, http.MethodGet, "/api/products", nil, nil)
+	publicProducts := decodeAllergyJSON[[]allergyProductResponse](t, publicRecorder)
+	if len(publicProducts) == 0 || publicProducts[0].ID != "children-panel" || publicProducts[0].PriceCents != 29900 {
+		t.Fatalf("expected published children product first, got %+v", publicProducts)
+	}
+
+	createOrderRecorder := performFlowRequest(t, engine, http.MethodPost, "/api/orders", map[string]any{
+		"service_code":    "children-panel",
+		"recipient_name":  "张三",
+		"recipient_phone": "13800000000",
+		"recipient_email": user.Email,
+		"shipping_address": map[string]any{
+			"province":     "上海市",
+			"city":         "上海市",
+			"district":     "浦东新区",
+			"address_line": "世纪大道 100 号",
+		},
+	}, memberHeaders)
+	createdOrder := decodeAllergyAPIResponse[allergyOrderCreateData](t, createOrderRecorder)
+
+	patchRecorder := performFlowRequest(t, engine, http.MethodPatch, fmt.Sprintf("/api/admin/service-products/%d", createdProduct.ID), map[string]any{
+		"title":       "儿童专项过敏原检测（升级版）",
+		"description": "升级后的检测项目说明",
+		"image_url":   "https://cdn.example.com/product-children-v2.jpg",
+		"cta_text":    "立即预约",
+		"tag":         "热门",
+		"price_cents": 32900,
+		"sort_order":  2,
+		"status":      "published",
+	}, adminHeaders)
+	updatedProduct := decodeAllergyAPIResponse[allergyAdminServiceProductDetail](t, patchRecorder)
+	if updatedProduct.ServiceCode != "children-panel" || updatedProduct.PriceCents != 32900 {
+		t.Fatalf("unexpected updated product: %+v", updatedProduct)
+	}
+
+	var persistedOrder model.AllergyOrder
+	if err := db.First(&persistedOrder, createdOrder.OrderID).Error; err != nil {
+		t.Fatalf("failed to reload order: %v", err)
+	}
+	if persistedOrder.ServiceCode != "children-panel" ||
+		persistedOrder.ServiceNameSnapshot != "儿童专项过敏原检测" ||
+		persistedOrder.ServicePriceCents != 29900 {
+		t.Fatalf("expected order snapshot to stay unchanged, got %+v", persistedOrder)
+	}
+
+	archiveRecorder := performFlowRequest(t, engine, http.MethodPost, fmt.Sprintf("/api/admin/service-products/%d/archive", createdProduct.ID), nil, adminHeaders)
+	archivedProduct := decodeAllergyAPIResponse[allergyAdminServiceProductDetail](t, archiveRecorder)
+	if archivedProduct.Status != "archived" {
+		t.Fatalf("expected archived status, got %+v", archivedProduct)
+	}
+
+	archivedOrderRecorder := performFlowRequest(t, engine, http.MethodPost, "/api/orders", map[string]any{
+		"service_code":    "children-panel",
+		"recipient_name":  "李四",
+		"recipient_phone": "13900000000",
+		"recipient_email": user.Email,
+		"shipping_address": map[string]any{
+			"province":     "上海市",
+			"city":         "上海市",
+			"district":     "浦东新区",
+			"address_line": "世纪大道 200 号",
+		},
+	}, memberHeaders)
+	var envelope allergyAPIResponse
+	if err := common.Unmarshal(archivedOrderRecorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("failed to decode archived order response: %v", err)
+	}
+	if envelope.Success || envelope.Message != "服务不存在" {
+		t.Fatalf("expected archived product order to fail, got body=%s", archivedOrderRecorder.Body.String())
+	}
+
+	listRecorder := performFlowRequest(t, engine, http.MethodGet, "/api/admin/service-products", nil, adminHeaders)
+	listData := decodeAllergyAPIResponse[allergyAdminServiceProductPage](t, listRecorder)
+	if listData.Total < 2 {
+		t.Fatalf("expected admin product list to include default and children products, got %+v", listData)
 	}
 }
 

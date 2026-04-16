@@ -67,6 +67,7 @@ export default function SettingsSidebarModulesAdmin(props) {
       user: true,
       subscription: true,
       allergy_orders: true,
+      allergy_service_products: true,
       setting: true,
     },
   });
@@ -129,6 +130,7 @@ export default function SettingsSidebarModulesAdmin(props) {
         user: true,
         subscription: true,
         allergy_orders: true,
+        allergy_service_products: true,
         setting: true,
       },
     };
@@ -199,6 +201,7 @@ export default function SettingsSidebarModulesAdmin(props) {
             user: true,
             subscription: true,
             allergy_orders: true,
+            allergy_service_products: true,
             setting: true,
           },
         };
@@ -278,6 +281,11 @@ export default function SettingsSidebarModulesAdmin(props) {
           key: 'allergy_orders',
           title: t('过敏订单'),
           description: t('检测履约与报告管理'),
+        },
+        {
+          key: 'allergy_service_products',
+          title: t('检测项目'),
+          description: t('检测项目上架与定价'),
         },
         {
           key: 'setting',

@@ -283,6 +283,7 @@ func migrateDB() error {
 		&SubscriptionPreConsumeRecord{},
 		&CustomOAuthProvider{},
 		&UserOAuthBinding{},
+		&AllergyServiceProduct{},
 		&AllergyOrder{},
 		&SampleKit{},
 		&LabSubmission{},
@@ -301,6 +302,9 @@ func migrateDB() error {
 		if err := DB.AutoMigrate(&SubscriptionPlan{}); err != nil {
 			return err
 		}
+	}
+	if err := EnsureDefaultAllergyServiceProducts(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -340,6 +344,7 @@ func migrateDBFast() error {
 		{&SubscriptionPreConsumeRecord{}, "SubscriptionPreConsumeRecord"},
 		{&CustomOAuthProvider{}, "CustomOAuthProvider"},
 		{&UserOAuthBinding{}, "UserOAuthBinding"},
+		{&AllergyServiceProduct{}, "AllergyServiceProduct"},
 		{&AllergyOrder{}, "AllergyOrder"},
 		{&SampleKit{}, "SampleKit"},
 		{&LabSubmission{}, "LabSubmission"},
@@ -378,6 +383,9 @@ func migrateDBFast() error {
 		if err := DB.AutoMigrate(&SubscriptionPlan{}); err != nil {
 			return err
 		}
+	}
+	if err := EnsureDefaultAllergyServiceProducts(); err != nil {
+		return err
 	}
 	common.SysLog("database migrated")
 	return nil

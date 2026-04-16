@@ -75,6 +75,8 @@ type allergyProductResponse struct {
 	Image       string `json:"image"`
 	CTAText     string `json:"ctaText"`
 	Tag         string `json:"tag"`
+	PriceCents  int    `json:"price_cents"`
+	Currency    string `json:"currency"`
 }
 
 func setupAllergyControllerTest(t *testing.T) (*gorm.DB, *gin.Engine) {
@@ -109,8 +111,12 @@ func setupAllergyControllerTest(t *testing.T) (*gorm.DB, *gin.Engine) {
 		&model.MemberProfile{},
 		&model.EmailLoginCodeStore{},
 		&model.MemberSession{},
+		&model.AllergyServiceProduct{},
 	); err != nil {
 		t.Fatalf("failed to migrate allergy auth tables: %v", err)
+	}
+	if err := model.EnsureDefaultAllergyServiceProducts(); err != nil {
+		t.Fatalf("failed to seed default allergy service products: %v", err)
 	}
 
 	engine := gin.New()
@@ -268,12 +274,32 @@ func TestGetAllergyHeroFallsBackToDefaultContent(t *testing.T) {
 	}
 }
 
-func TestGetAllergyProductsUsesOptionJSONWhenConfigured(t *testing.T) {
-	_, engine := setupAllergyControllerTest(t)
+func TestGetAllergyProductsUsesPublishedCatalogItems(t *testing.T) {
+	db, engine := setupAllergyControllerTest(t)
 
-	rawProducts := `[{"id":"allergy-test-basic","title":"埃勒吉居家过敏原检测服务","description":"单次检测服务","image":"https://cdn.example.com/product-1.jpg","ctaText":"立即购买","tag":"推荐"}]`
-	if err := model.UpdateOption("AllergyProducts", rawProducts); err != nil {
-		t.Fatalf("failed to seed option: %v", err)
+	if err := db.Create(&model.AllergyServiceProduct{
+		ServiceCode: "children-panel",
+		Title:       "儿童专项过敏原检测",
+		Description: "面向儿童常见过敏原的检测项目",
+		ImageURL:    "https://cdn.example.com/product-children.jpg",
+		CTAText:     "立即检测",
+		Tag:         "新品",
+		PriceCents:  29900,
+		Currency:    "CNY",
+		SortOrder:   1,
+		Status:      model.AllergyServiceProductStatusPublished,
+	}).Error; err != nil {
+		t.Fatalf("failed to seed published product: %v", err)
+	}
+	if err := db.Create(&model.AllergyServiceProduct{
+		ServiceCode: "draft-panel",
+		Title:       "草稿检测项目",
+		Description: "未发布项目",
+		PriceCents:  39900,
+		Currency:    "CNY",
+		Status:      model.AllergyServiceProductStatusDraft,
+	}).Error; err != nil {
+		t.Fatalf("failed to seed draft product: %v", err)
 	}
 
 	recorder := performAllergyRequest(t, engine, http.MethodGet, "/api/products", nil, nil)
@@ -282,11 +308,16 @@ func TestGetAllergyProductsUsesOptionJSONWhenConfigured(t *testing.T) {
 	}
 
 	response := decodeAllergyJSON[[]allergyProductResponse](t, recorder)
-	if len(response) != 1 {
-		t.Fatalf("expected 1 product, got %d", len(response))
+	if len(response) != 2 {
+		t.Fatalf("expected 2 published products, got %d: %+v", len(response), response)
 	}
-	if response[0].ID != "allergy-test-basic" || response[0].CTAText != "立即购买" {
+	if response[0].ID != "children-panel" || response[0].CTAText != "立即检测" || response[0].PriceCents != 29900 || response[0].Currency != "CNY" {
 		t.Fatalf("unexpected product payload: %+v", response[0])
+	}
+	for _, product := range response {
+		if product.ID == "draft-panel" {
+			t.Fatalf("draft product must not be returned: %+v", response)
+		}
 	}
 }
 

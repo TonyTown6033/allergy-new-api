@@ -53,6 +53,7 @@ export const DEFAULT_ADMIN_CONFIG = {
     user: true,
     subscription: true,
     allergy_orders: true,
+    allergy_service_products: true,
     setting: true,
   },
 };
