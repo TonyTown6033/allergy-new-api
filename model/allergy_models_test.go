@@ -25,10 +25,14 @@ func setupAllergyModelTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("failed to open sqlite db: %v", err)
 	}
+	originalDB := DB
+	originalLOGDB := LOG_DB
 	DB = db
 	LOG_DB = db
 
 	t.Cleanup(func() {
+		DB = originalDB
+		LOG_DB = originalLOGDB
 		sqlDB, err := db.DB()
 		if err == nil {
 			_ = sqlDB.Close()
@@ -49,6 +53,7 @@ func TestMigrateDBCreatesAllergyBusinessTables(t *testing.T) {
 		&MemberProfile{},
 		&EmailLoginCodeStore{},
 		&MemberSession{},
+		&AllergyServiceProduct{},
 		&AllergyOrder{},
 		&SampleKit{},
 		&LabSubmission{},
@@ -60,6 +65,16 @@ func TestMigrateDBCreatesAllergyBusinessTables(t *testing.T) {
 		if !db.Migrator().HasTable(table) {
 			t.Fatalf("expected table for %T to exist after migration", table)
 		}
+	}
+	if !db.Migrator().HasColumn(&AllergyServiceProduct{}, "original_price_cents") {
+		t.Fatalf("expected allergy service product original_price_cents column to exist after migration")
+	}
+	var defaultProduct AllergyServiceProduct
+	if err := db.Where("service_code = ?", "allergy-test-basic").First(&defaultProduct).Error; err != nil {
+		t.Fatalf("failed to load default allergy service product: %v", err)
+	}
+	if defaultProduct.OriginalPriceCents != 0 {
+		t.Fatalf("expected default product original price to be 0, got %+v", defaultProduct)
 	}
 }
 

@@ -42,14 +42,15 @@ type allergyArticleContent struct {
 }
 
 type allergyProductContent struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Image       string `json:"image"`
-	CTAText     string `json:"ctaText"`
-	Tag         string `json:"tag"`
-	PriceCents  int    `json:"price_cents,omitempty"`
-	Currency    string `json:"currency,omitempty"`
+	ID                 string `json:"id"`
+	Title              string `json:"title"`
+	Description        string `json:"description"`
+	Image              string `json:"image"`
+	CTAText            string `json:"ctaText"`
+	Tag                string `json:"tag"`
+	PriceCents         int    `json:"price_cents,omitempty"`
+	OriginalPriceCents int    `json:"original_price_cents"`
+	Currency           string `json:"currency,omitempty"`
 }
 
 type allergySendCodeRequest struct {
@@ -127,14 +128,15 @@ func GetAllergyProducts(c *gin.Context) {
 	response := make([]allergyProductContent, 0, len(products))
 	for _, product := range products {
 		response = append(response, allergyProductContent{
-			ID:          product.ServiceCode,
-			Title:       product.Title,
-			Description: product.Description,
-			Image:       product.ImageURL,
-			CTAText:     product.CTAText,
-			Tag:         product.Tag,
-			PriceCents:  product.PriceCents,
-			Currency:    product.Currency,
+			ID:                 product.ServiceCode,
+			Title:              product.Title,
+			Description:        product.Description,
+			Image:              product.ImageURL,
+			CTAText:            product.CTAText,
+			Tag:                product.Tag,
+			PriceCents:         product.PriceCents,
+			OriginalPriceCents: product.OriginalPriceCents,
+			Currency:           product.Currency,
 		})
 	}
 	c.JSON(http.StatusOK, response)

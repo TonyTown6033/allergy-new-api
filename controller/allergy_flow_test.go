@@ -135,13 +135,14 @@ type allergyAdminOrderListPage struct {
 }
 
 type allergyAdminServiceProductItem struct {
-	ID          int64  `json:"id"`
-	ServiceCode string `json:"service_code"`
-	Title       string `json:"title"`
-	PriceCents  int    `json:"price_cents"`
-	Currency    string `json:"currency"`
-	Status      string `json:"status"`
-	SortOrder   int    `json:"sort_order"`
+	ID                 int64  `json:"id"`
+	ServiceCode        string `json:"service_code"`
+	Title              string `json:"title"`
+	PriceCents         int    `json:"price_cents"`
+	OriginalPriceCents int    `json:"original_price_cents"`
+	Currency           string `json:"currency"`
+	Status             string `json:"status"`
+	SortOrder          int    `json:"sort_order"`
 }
 
 type allergyAdminServiceProductPage struct {
@@ -152,17 +153,18 @@ type allergyAdminServiceProductPage struct {
 }
 
 type allergyAdminServiceProductDetail struct {
-	ID          int64  `json:"id"`
-	ServiceCode string `json:"service_code"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	ImageURL    string `json:"image_url"`
-	CTAText     string `json:"cta_text"`
-	Tag         string `json:"tag"`
-	PriceCents  int    `json:"price_cents"`
-	Currency    string `json:"currency"`
-	SortOrder   int    `json:"sort_order"`
-	Status      string `json:"status"`
+	ID                 int64  `json:"id"`
+	ServiceCode        string `json:"service_code"`
+	Title              string `json:"title"`
+	Description        string `json:"description"`
+	ImageURL           string `json:"image_url"`
+	CTAText            string `json:"cta_text"`
+	Tag                string `json:"tag"`
+	PriceCents         int    `json:"price_cents"`
+	OriginalPriceCents int    `json:"original_price_cents"`
+	Currency           string `json:"currency"`
+	SortOrder          int    `json:"sort_order"`
+	Status             string `json:"status"`
 }
 
 type allergyAdminServiceProductImageUploadData struct {
@@ -632,18 +634,23 @@ func TestAllergyServiceProductAdminCatalogAndOrderSnapshot(t *testing.T) {
 	adminHeaders := map[string]string{"X-Test-Admin-Id": strconv.Itoa(admin.Id)}
 
 	createProductRecorder := performFlowRequest(t, engine, http.MethodPost, "/api/admin/service-products", map[string]any{
-		"service_code": "children-panel",
-		"title":        "儿童专项过敏原检测",
-		"description":  "面向儿童常见过敏原的检测项目",
-		"image_url":    "https://cdn.example.com/product-children.jpg",
-		"cta_text":     "立即检测",
-		"tag":          "新品",
-		"price_cents":  29900,
-		"sort_order":   1,
-		"status":       "draft",
+		"service_code":         "children-panel",
+		"title":                "儿童专项过敏原检测",
+		"description":          "面向儿童常见过敏原的检测项目",
+		"image_url":            "https://cdn.example.com/product-children.jpg",
+		"cta_text":             "立即检测",
+		"tag":                  "新品",
+		"price_cents":          29900,
+		"original_price_cents": 39900,
+		"sort_order":           1,
+		"status":               "draft",
 	}, adminHeaders)
 	createdProduct := decodeAllergyAPIResponse[allergyAdminServiceProductDetail](t, createProductRecorder)
-	if createdProduct.ID == 0 || createdProduct.Status != "draft" || createdProduct.Currency != "CNY" {
+	if createdProduct.ID == 0 ||
+		createdProduct.Status != "draft" ||
+		createdProduct.Currency != "CNY" ||
+		createdProduct.PriceCents != 29900 ||
+		createdProduct.OriginalPriceCents != 39900 {
 		t.Fatalf("unexpected created product: %+v", createdProduct)
 	}
 
@@ -663,7 +670,10 @@ func TestAllergyServiceProductAdminCatalogAndOrderSnapshot(t *testing.T) {
 
 	publicRecorder := performFlowRequest(t, engine, http.MethodGet, "/api/products", nil, nil)
 	publicProducts := decodeAllergyJSON[[]allergyProductResponse](t, publicRecorder)
-	if len(publicProducts) == 0 || publicProducts[0].ID != "children-panel" || publicProducts[0].PriceCents != 29900 {
+	if len(publicProducts) == 0 ||
+		publicProducts[0].ID != "children-panel" ||
+		publicProducts[0].PriceCents != 29900 ||
+		publicProducts[0].OriginalPriceCents != 39900 {
 		t.Fatalf("expected published children product first, got %+v", publicProducts)
 	}
 
@@ -682,17 +692,20 @@ func TestAllergyServiceProductAdminCatalogAndOrderSnapshot(t *testing.T) {
 	createdOrder := decodeAllergyAPIResponse[allergyOrderCreateData](t, createOrderRecorder)
 
 	patchRecorder := performFlowRequest(t, engine, http.MethodPatch, fmt.Sprintf("/api/admin/service-products/%d", createdProduct.ID), map[string]any{
-		"title":       "儿童专项过敏原检测（升级版）",
-		"description": "升级后的检测项目说明",
-		"image_url":   "https://cdn.example.com/product-children-v2.jpg",
-		"cta_text":    "立即预约",
-		"tag":         "热门",
-		"price_cents": 32900,
-		"sort_order":  2,
-		"status":      "published",
+		"title":                "儿童专项过敏原检测（升级版）",
+		"description":          "升级后的检测项目说明",
+		"image_url":            "https://cdn.example.com/product-children-v2.jpg",
+		"cta_text":             "立即预约",
+		"tag":                  "热门",
+		"price_cents":          32900,
+		"original_price_cents": 42900,
+		"sort_order":           2,
+		"status":               "published",
 	}, adminHeaders)
 	updatedProduct := decodeAllergyAPIResponse[allergyAdminServiceProductDetail](t, patchRecorder)
-	if updatedProduct.ServiceCode != "children-panel" || updatedProduct.PriceCents != 32900 {
+	if updatedProduct.ServiceCode != "children-panel" ||
+		updatedProduct.PriceCents != 32900 ||
+		updatedProduct.OriginalPriceCents != 42900 {
 		t.Fatalf("unexpected updated product: %+v", updatedProduct)
 	}
 
@@ -736,6 +749,41 @@ func TestAllergyServiceProductAdminCatalogAndOrderSnapshot(t *testing.T) {
 	listData := decodeAllergyAPIResponse[allergyAdminServiceProductPage](t, listRecorder)
 	if listData.Total < 2 {
 		t.Fatalf("expected admin product list to include default and children products, got %+v", listData)
+	}
+	foundDiscountedProduct := false
+	for _, item := range listData.Items {
+		if item.ServiceCode == "children-panel" {
+			foundDiscountedProduct = true
+			if item.PriceCents != 32900 || item.OriginalPriceCents != 42900 {
+				t.Fatalf("expected admin list to expose discounted price fields, got %+v", item)
+			}
+		}
+	}
+	if !foundDiscountedProduct {
+		t.Fatalf("expected admin list to include children-panel, got %+v", listData)
+	}
+}
+
+func TestAllergyServiceProductRejectsInvalidOriginalPrice(t *testing.T) {
+	db, engine := setupAllergyFlowControllerTest(t)
+	admin := seedAdminUser(t, db)
+	adminHeaders := map[string]string{"X-Test-Admin-Id": strconv.Itoa(admin.Id)}
+
+	recorder := performFlowRequest(t, engine, http.MethodPost, "/api/admin/service-products", map[string]any{
+		"service_code":         "invalid-discount",
+		"title":                "无效折扣检测",
+		"description":          "原价不能低于或等于折后价",
+		"price_cents":          29900,
+		"original_price_cents": 29900,
+		"sort_order":           1,
+		"status":               "draft",
+	}, adminHeaders)
+	var envelope allergyAPIResponse
+	if err := common.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("failed to decode invalid discount response: %v body=%s", err, recorder.Body.String())
+	}
+	if envelope.Success || envelope.Message != "项目原价必须大于折后价" {
+		t.Fatalf("expected invalid original price to fail, got body=%s", recorder.Body.String())
 	}
 }
 

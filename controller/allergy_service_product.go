@@ -17,15 +17,16 @@ import (
 )
 
 type adminAllergyServiceProductRequest struct {
-	ServiceCode string `json:"service_code"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	ImageURL    string `json:"image_url"`
-	CTAText     string `json:"cta_text"`
-	Tag         string `json:"tag"`
-	PriceCents  int    `json:"price_cents"`
-	SortOrder   int    `json:"sort_order"`
-	Status      string `json:"status"`
+	ServiceCode        string `json:"service_code"`
+	Title              string `json:"title"`
+	Description        string `json:"description"`
+	ImageURL           string `json:"image_url"`
+	CTAText            string `json:"cta_text"`
+	Tag                string `json:"tag"`
+	PriceCents         int    `json:"price_cents"`
+	OriginalPriceCents int    `json:"original_price_cents"`
+	SortOrder          int    `json:"sort_order"`
+	Status             string `json:"status"`
 }
 
 var allowedAllergyServiceProductImageExtensions = map[string]struct{}{
@@ -93,15 +94,16 @@ func CreateAdminAllergyServiceProduct(c *gin.Context) {
 		return
 	}
 	product, err := model.CreateAllergyServiceProduct(model.AllergyServiceProductInput{
-		ServiceCode: req.ServiceCode,
-		Title:       req.Title,
-		Description: req.Description,
-		ImageURL:    req.ImageURL,
-		CTAText:     req.CTAText,
-		Tag:         req.Tag,
-		PriceCents:  req.PriceCents,
-		SortOrder:   req.SortOrder,
-		Status:      req.Status,
+		ServiceCode:        req.ServiceCode,
+		Title:              req.Title,
+		Description:        req.Description,
+		ImageURL:           req.ImageURL,
+		CTAText:            req.CTAText,
+		Tag:                req.Tag,
+		PriceCents:         req.PriceCents,
+		OriginalPriceCents: req.OriginalPriceCents,
+		SortOrder:          req.SortOrder,
+		Status:             req.Status,
 	})
 	if err != nil {
 		common.ApiErrorMsg(c, err.Error())
@@ -122,14 +124,15 @@ func UpdateAdminAllergyServiceProduct(c *gin.Context) {
 		return
 	}
 	product, err := model.UpdateAllergyServiceProduct(productID, model.AllergyServiceProductInput{
-		Title:       req.Title,
-		Description: req.Description,
-		ImageURL:    req.ImageURL,
-		CTAText:     req.CTAText,
-		Tag:         req.Tag,
-		PriceCents:  req.PriceCents,
-		SortOrder:   req.SortOrder,
-		Status:      req.Status,
+		Title:              req.Title,
+		Description:        req.Description,
+		ImageURL:           req.ImageURL,
+		CTAText:            req.CTAText,
+		Tag:                req.Tag,
+		PriceCents:         req.PriceCents,
+		OriginalPriceCents: req.OriginalPriceCents,
+		SortOrder:          req.SortOrder,
+		Status:             req.Status,
 	})
 	if err != nil {
 		common.ApiErrorMsg(c, err.Error())
@@ -162,32 +165,34 @@ func updateAdminAllergyServiceProductStatus(c *gin.Context, status string) {
 
 func buildAdminAllergyServiceProductItem(product *model.AllergyServiceProduct) gin.H {
 	return gin.H{
-		"id":           product.ID,
-		"service_code": product.ServiceCode,
-		"title":        product.Title,
-		"price_cents":  product.PriceCents,
-		"currency":     product.Currency,
-		"status":       product.Status,
-		"sort_order":   product.SortOrder,
-		"updated_at":   product.UpdatedAt.Format(time.RFC3339),
+		"id":                   product.ID,
+		"service_code":         product.ServiceCode,
+		"title":                product.Title,
+		"price_cents":          product.PriceCents,
+		"original_price_cents": product.OriginalPriceCents,
+		"currency":             product.Currency,
+		"status":               product.Status,
+		"sort_order":           product.SortOrder,
+		"updated_at":           product.UpdatedAt.Format(time.RFC3339),
 	}
 }
 
 func buildAdminAllergyServiceProductDetail(product *model.AllergyServiceProduct) gin.H {
 	return gin.H{
-		"id":           product.ID,
-		"service_code": product.ServiceCode,
-		"title":        product.Title,
-		"description":  product.Description,
-		"image_url":    product.ImageURL,
-		"cta_text":     product.CTAText,
-		"tag":          product.Tag,
-		"price_cents":  product.PriceCents,
-		"currency":     product.Currency,
-		"sort_order":   product.SortOrder,
-		"status":       product.Status,
-		"created_at":   product.CreatedAt.Format(time.RFC3339),
-		"updated_at":   product.UpdatedAt.Format(time.RFC3339),
+		"id":                   product.ID,
+		"service_code":         product.ServiceCode,
+		"title":                product.Title,
+		"description":          product.Description,
+		"image_url":            product.ImageURL,
+		"cta_text":             product.CTAText,
+		"tag":                  product.Tag,
+		"price_cents":          product.PriceCents,
+		"original_price_cents": product.OriginalPriceCents,
+		"currency":             product.Currency,
+		"sort_order":           product.SortOrder,
+		"status":               product.Status,
+		"created_at":           product.CreatedAt.Format(time.RFC3339),
+		"updated_at":           product.UpdatedAt.Format(time.RFC3339),
 	}
 }
 

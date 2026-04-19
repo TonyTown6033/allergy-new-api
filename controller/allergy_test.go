@@ -69,14 +69,15 @@ type allergyHeroResponse struct {
 }
 
 type allergyProductResponse struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Image       string `json:"image"`
-	CTAText     string `json:"ctaText"`
-	Tag         string `json:"tag"`
-	PriceCents  int    `json:"price_cents"`
-	Currency    string `json:"currency"`
+	ID                 string `json:"id"`
+	Title              string `json:"title"`
+	Description        string `json:"description"`
+	Image              string `json:"image"`
+	CTAText            string `json:"ctaText"`
+	Tag                string `json:"tag"`
+	PriceCents         int    `json:"price_cents"`
+	OriginalPriceCents int    `json:"original_price_cents"`
+	Currency           string `json:"currency"`
 }
 
 func setupAllergyControllerTest(t *testing.T) (*gorm.DB, *gin.Engine) {
@@ -278,16 +279,17 @@ func TestGetAllergyProductsUsesPublishedCatalogItems(t *testing.T) {
 	db, engine := setupAllergyControllerTest(t)
 
 	if err := db.Create(&model.AllergyServiceProduct{
-		ServiceCode: "children-panel",
-		Title:       "儿童专项过敏原检测",
-		Description: "面向儿童常见过敏原的检测项目",
-		ImageURL:    "https://cdn.example.com/product-children.jpg",
-		CTAText:     "立即检测",
-		Tag:         "新品",
-		PriceCents:  29900,
-		Currency:    "CNY",
-		SortOrder:   1,
-		Status:      model.AllergyServiceProductStatusPublished,
+		ServiceCode:        "children-panel",
+		Title:              "儿童专项过敏原检测",
+		Description:        "面向儿童常见过敏原的检测项目",
+		ImageURL:           "https://cdn.example.com/product-children.jpg",
+		CTAText:            "立即检测",
+		Tag:                "新品",
+		PriceCents:         29900,
+		OriginalPriceCents: 39900,
+		Currency:           "CNY",
+		SortOrder:          1,
+		Status:             model.AllergyServiceProductStatusPublished,
 	}).Error; err != nil {
 		t.Fatalf("failed to seed published product: %v", err)
 	}
@@ -311,7 +313,11 @@ func TestGetAllergyProductsUsesPublishedCatalogItems(t *testing.T) {
 	if len(response) != 2 {
 		t.Fatalf("expected 2 published products, got %d: %+v", len(response), response)
 	}
-	if response[0].ID != "children-panel" || response[0].CTAText != "立即检测" || response[0].PriceCents != 29900 || response[0].Currency != "CNY" {
+	if response[0].ID != "children-panel" ||
+		response[0].CTAText != "立即检测" ||
+		response[0].PriceCents != 29900 ||
+		response[0].OriginalPriceCents != 39900 ||
+		response[0].Currency != "CNY" {
 		t.Fatalf("unexpected product payload: %+v", response[0])
 	}
 	for _, product := range response {

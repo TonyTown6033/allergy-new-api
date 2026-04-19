@@ -16,15 +16,16 @@ const (
 )
 
 type AllergyServiceProductInput struct {
-	ServiceCode string
-	Title       string
-	Description string
-	ImageURL    string
-	CTAText     string
-	Tag         string
-	PriceCents  int
-	SortOrder   int
-	Status      string
+	ServiceCode        string
+	Title              string
+	Description        string
+	ImageURL           string
+	CTAText            string
+	Tag                string
+	PriceCents         int
+	OriginalPriceCents int
+	SortOrder          int
+	Status             string
 }
 
 func IsValidAllergyServiceProductStatus(status string) bool {
@@ -58,16 +59,17 @@ func NormalizeAllergyServiceCode(code string) (string, error) {
 func defaultAllergyServiceProducts() []*AllergyServiceProduct {
 	return []*AllergyServiceProduct{
 		{
-			ServiceCode: "allergy-test-basic",
-			Title:       "埃勒吉居家过敏原检测服务",
-			Description: "通过一滴指尖血，精准检测100+种过敏原。APP根据结果生成个性化回避建议与营养补充方案。",
-			ImageURL:    "https://picsum.photos/600/400?random=5",
-			CTAText:     "立即购买",
-			Tag:         "最受欢迎",
-			PriceCents:  19900,
-			Currency:    AllergyServiceProductCurrencyCNY,
-			SortOrder:   10,
-			Status:      AllergyServiceProductStatusPublished,
+			ServiceCode:        "allergy-test-basic",
+			Title:              "埃勒吉居家过敏原检测服务",
+			Description:        "通过一滴指尖血，精准检测100+种过敏原。APP根据结果生成个性化回避建议与营养补充方案。",
+			ImageURL:           "https://picsum.photos/600/400?random=5",
+			CTAText:            "立即购买",
+			Tag:                "最受欢迎",
+			PriceCents:         19900,
+			OriginalPriceCents: 0,
+			Currency:           AllergyServiceProductCurrencyCNY,
+			SortOrder:          10,
+			Status:             AllergyServiceProductStatusPublished,
 		},
 	}
 }
@@ -132,16 +134,17 @@ func CreateAllergyServiceProduct(input AllergyServiceProductInput) (*AllergyServ
 		return nil, err
 	}
 	product := &AllergyServiceProduct{
-		ServiceCode: code,
-		Title:       strings.TrimSpace(input.Title),
-		Description: strings.TrimSpace(input.Description),
-		ImageURL:    strings.TrimSpace(input.ImageURL),
-		CTAText:     strings.TrimSpace(input.CTAText),
-		Tag:         strings.TrimSpace(input.Tag),
-		PriceCents:  input.PriceCents,
-		Currency:    AllergyServiceProductCurrencyCNY,
-		SortOrder:   input.SortOrder,
-		Status:      strings.TrimSpace(input.Status),
+		ServiceCode:        code,
+		Title:              strings.TrimSpace(input.Title),
+		Description:        strings.TrimSpace(input.Description),
+		ImageURL:           strings.TrimSpace(input.ImageURL),
+		CTAText:            strings.TrimSpace(input.CTAText),
+		Tag:                strings.TrimSpace(input.Tag),
+		PriceCents:         input.PriceCents,
+		OriginalPriceCents: input.OriginalPriceCents,
+		Currency:           AllergyServiceProductCurrencyCNY,
+		SortOrder:          input.SortOrder,
+		Status:             strings.TrimSpace(input.Status),
 	}
 	if err := normalizeAndValidateAllergyServiceProduct(product); err != nil {
 		return nil, err
@@ -163,6 +166,7 @@ func UpdateAllergyServiceProduct(id int64, input AllergyServiceProductInput) (*A
 	product.CTAText = strings.TrimSpace(input.CTAText)
 	product.Tag = strings.TrimSpace(input.Tag)
 	product.PriceCents = input.PriceCents
+	product.OriginalPriceCents = input.OriginalPriceCents
 	product.Currency = AllergyServiceProductCurrencyCNY
 	product.SortOrder = input.SortOrder
 	if strings.TrimSpace(input.Status) != "" {
@@ -221,6 +225,12 @@ func normalizeAndValidateAllergyServiceProduct(product *AllergyServiceProduct) e
 	}
 	if product.PriceCents <= 0 {
 		return errors.New("项目价格必须大于 0")
+	}
+	if product.OriginalPriceCents < 0 {
+		return errors.New("项目原价不能小于 0")
+	}
+	if product.OriginalPriceCents > 0 && product.OriginalPriceCents <= product.PriceCents {
+		return errors.New("项目原价必须大于折后价")
 	}
 	if !IsValidAllergyServiceProductStatus(product.Status) {
 		return fmt.Errorf("项目状态无效: %s", product.Status)

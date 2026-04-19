@@ -48,6 +48,7 @@ const defaultForm = {
   image_url: '',
   cta_text: '立即购买',
   tag: '',
+  original_price_yuan: 0,
   price_yuan: 199,
   sort_order: 10,
   status: 'draft',
@@ -58,6 +59,10 @@ function formatMoney(cents, currency = 'CNY') {
     style: 'currency',
     currency: currency || 'CNY',
   }).format(Number(cents || 0) / 100);
+}
+
+function hasDiscountPrice(product) {
+  return Number(product?.original_price_cents || 0) > Number(product?.price_cents || 0);
 }
 
 function getStatusMeta(status) {
@@ -87,6 +92,9 @@ function toForm(product) {
     image_url: product?.image_url || '',
     cta_text: product?.cta_text || '立即购买',
     tag: product?.tag || '',
+    original_price_yuan: Number(
+      ((product?.original_price_cents || 0) / 100).toFixed(2),
+    ),
     price_yuan: Number(((product?.price_cents || 0) / 100).toFixed(2)),
     sort_order: Number(product?.sort_order || 0),
     status: product?.status || 'draft',
@@ -101,6 +109,7 @@ function toPayload(form, includeCode) {
     cta_text: form.cta_text.trim(),
     tag: form.tag.trim(),
     price_cents: Math.round(Number(form.price_yuan || 0) * 100),
+    original_price_cents: Math.round(Number(form.original_price_yuan || 0) * 100),
     sort_order: Number(form.sort_order || 0),
     status: form.status,
   };
@@ -289,7 +298,16 @@ const AllergyServiceProducts = () => {
       title: t('价格'),
       dataIndex: 'price_cents',
       key: 'price_cents',
-      render: (value, record) => formatMoney(value, record.currency),
+      render: (value, record) => (
+        <div className='flex flex-col'>
+          {hasDiscountPrice(record) ? (
+            <span className='text-xs text-semi-color-text-2 line-through'>
+              {formatMoney(record.original_price_cents, record.currency)}
+            </span>
+          ) : null}
+          <span className='font-semibold'>{formatMoney(value, record.currency)}</span>
+        </div>
+      ),
     },
     {
       title: t('状态'),
@@ -465,9 +483,20 @@ const AllergyServiceProducts = () => {
               />
             </label>
           </div>
-          <div className='grid gap-4 md:grid-cols-3'>
+          <div className='grid gap-4 md:grid-cols-4'>
             <label className='grid gap-2'>
-              <span className='text-sm font-medium'>{t('价格（元）')}</span>
+              <span className='text-sm font-medium'>{t('原价（元，可选）')}</span>
+              <InputNumber
+                min={0}
+                precision={2}
+                value={form.original_price_yuan}
+                onChange={(value) =>
+                  setForm({ ...form, original_price_yuan: value })
+                }
+              />
+            </label>
+            <label className='grid gap-2'>
+              <span className='text-sm font-medium'>{t('折后价（元）')}</span>
               <InputNumber
                 min={0.01}
                 precision={2}
