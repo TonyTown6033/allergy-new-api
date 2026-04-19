@@ -1,6 +1,14 @@
 package controller
 
 import (
+	"errors"
+	"fmt"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -18,6 +26,14 @@ type adminAllergyServiceProductRequest struct {
 	PriceCents  int    `json:"price_cents"`
 	SortOrder   int    `json:"sort_order"`
 	Status      string `json:"status"`
+}
+
+var allowedAllergyServiceProductImageExtensions = map[string]struct{}{
+	".jpg":  {},
+	".jpeg": {},
+	".png":  {},
+	".gif":  {},
+	".webp": {},
 }
 
 func ListAdminAllergyServiceProducts(c *gin.Context) {
@@ -48,6 +64,26 @@ func GetAdminAllergyServiceProduct(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, buildAdminAllergyServiceProductDetail(product))
+}
+
+func UploadAdminAllergyServiceProductImage(c *gin.Context) {
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		common.ApiErrorMsg(c, "请上传图片文件")
+		return
+	}
+	if err := validateAllergyServiceProductImage(fileHeader); err != nil {
+		common.ApiErrorMsg(c, err.Error())
+		return
+	}
+	imageURL, err := saveAllergyServiceProductImage(fileHeader)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"image_url": imageURL,
+	})
 }
 
 func CreateAdminAllergyServiceProduct(c *gin.Context) {
@@ -153,4 +189,81 @@ func buildAdminAllergyServiceProductDetail(product *model.AllergyServiceProduct)
 		"created_at":   product.CreatedAt.Format(time.RFC3339),
 		"updated_at":   product.UpdatedAt.Format(time.RFC3339),
 	}
+}
+
+func ServeAllergyServiceProductImage(c *gin.Context) {
+	fileName := strings.TrimSpace(c.Param("file_name"))
+	if fileName == "" || fileName != filepath.Base(fileName) {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	filePath := filepath.Join(allergyServiceProductImageStorageDir(), fileName)
+	if _, err := os.Stat(filePath); err != nil {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	c.File(filePath)
+}
+
+func allergyServiceProductImageStorageDir() string {
+	if dir := strings.TrimSpace(os.Getenv("ALLERGY_PRODUCT_IMAGE_STORAGE_DIR")); dir != "" {
+		return dir
+	}
+	return filepath.Join("storage", "allergy-product-images")
+}
+
+func validateAllergyServiceProductImage(fileHeader *multipart.FileHeader) error {
+	if fileHeader == nil || fileHeader.Size <= 0 {
+		return errors.New("请上传图片文件")
+	}
+	extension := strings.ToLower(filepath.Ext(strings.TrimSpace(fileHeader.Filename)))
+	if _, ok := allowedAllergyServiceProductImageExtensions[extension]; !ok {
+		return errors.New("仅支持图片文件")
+	}
+	file, err := fileHeader.Open()
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	header := make([]byte, 512)
+	n, err := file.Read(header)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	if n == 0 {
+		return errors.New("请上传图片文件")
+	}
+	if contentType := http.DetectContentType(header[:n]); !strings.HasPrefix(contentType, "image/") {
+		return errors.New("仅支持图片文件")
+	}
+	return nil
+}
+
+func saveAllergyServiceProductImage(fileHeader *multipart.FileHeader) (string, error) {
+	src, err := fileHeader.Open()
+	if err != nil {
+		return "", err
+	}
+	defer src.Close()
+
+	dir := allergyServiceProductImageStorageDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+
+	extension := strings.ToLower(filepath.Ext(strings.TrimSpace(fileHeader.Filename)))
+	fileName := fmt.Sprintf("%d_%s%s", time.Now().UnixNano(), strings.ToLower(common.GetRandomString(6)), extension)
+	filePath := filepath.Join(dir, fileName)
+
+	dst, err := os.Create(filePath)
+	if err != nil {
+		return "", err
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, src); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("/uploads/allergy-product-images/%s", fileName), nil
 }

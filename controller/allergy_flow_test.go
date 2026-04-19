@@ -165,6 +165,10 @@ type allergyAdminServiceProductDetail struct {
 	Status      string `json:"status"`
 }
 
+type allergyAdminServiceProductImageUploadData struct {
+	ImageURL string `json:"image_url"`
+}
+
 type allergyAdminTimelineItem struct {
 	EventType        string `json:"event_type"`
 	Title            string `json:"title"`
@@ -239,10 +243,14 @@ func setupAllergyFlowControllerTest(t *testing.T) (*gorm.DB, *gin.Engine) {
 	originalPayMethods := operation_setting.PayMethods
 	originalServerAddress := system_setting.ServerAddress
 	originalStorageDir := os.Getenv("ALLERGY_REPORT_STORAGE_DIR")
+	originalProductImageStorageDir := os.Getenv("ALLERGY_PRODUCT_IMAGE_STORAGE_DIR")
 
 	storageDir := t.TempDir()
 	if err := os.Setenv("ALLERGY_REPORT_STORAGE_DIR", storageDir); err != nil {
 		t.Fatalf("failed to set report storage dir: %v", err)
+	}
+	if err := os.Setenv("ALLERGY_PRODUCT_IMAGE_STORAGE_DIR", filepath.Join(storageDir, "product-images")); err != nil {
+		t.Fatalf("failed to set product image storage dir: %v", err)
 	}
 
 	operation_setting.PayAddress = "https://pay.example.com"
@@ -289,6 +297,7 @@ func setupAllergyFlowControllerTest(t *testing.T) (*gorm.DB, *gin.Engine) {
 
 	engine := gin.New()
 	engine.GET("/api/products", GetAllergyProducts)
+	engine.GET("/uploads/allergy-product-images/:file_name", ServeAllergyServiceProductImage)
 	memberRoute := engine.Group("/api")
 	memberRoute.Use(middleware.AllergyMemberAuth())
 	{
@@ -337,6 +346,7 @@ func setupAllergyFlowControllerTest(t *testing.T) (*gorm.DB, *gin.Engine) {
 		adminRoute.GET("/reports/:id/delivery-logs", ListAdminAllergyReportDeliveryLogs)
 		adminRoute.GET("/service-products", ListAdminAllergyServiceProducts)
 		adminRoute.GET("/service-products/:id", GetAdminAllergyServiceProduct)
+		adminRoute.POST("/service-products/upload-image", UploadAdminAllergyServiceProductImage)
 		adminRoute.POST("/service-products", CreateAdminAllergyServiceProduct)
 		adminRoute.PATCH("/service-products/:id", UpdateAdminAllergyServiceProduct)
 		adminRoute.POST("/service-products/:id/publish", PublishAdminAllergyServiceProduct)
@@ -354,6 +364,11 @@ func setupAllergyFlowControllerTest(t *testing.T) (*gorm.DB, *gin.Engine) {
 			_ = os.Unsetenv("ALLERGY_REPORT_STORAGE_DIR")
 		} else {
 			_ = os.Setenv("ALLERGY_REPORT_STORAGE_DIR", originalStorageDir)
+		}
+		if originalProductImageStorageDir == "" {
+			_ = os.Unsetenv("ALLERGY_PRODUCT_IMAGE_STORAGE_DIR")
+		} else {
+			_ = os.Setenv("ALLERGY_PRODUCT_IMAGE_STORAGE_DIR", originalProductImageStorageDir)
 		}
 		sqlDB, err := db.DB()
 		if err == nil {
@@ -509,6 +524,20 @@ func writeTestPDF(t *testing.T, dir string, name string) string {
 		t.Fatalf("failed to write pdf: %v", err)
 	}
 	return path
+}
+
+func testPNGBytes() []byte {
+	return []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+		0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41,
+		0x54, 0x08, 0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+		0x00, 0x03, 0x01, 0x01, 0x00, 0x18, 0xdd, 0x8d,
+		0xb1, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+		0x44, 0xae, 0x42, 0x60, 0x82,
+	}
 }
 
 func TestAllergyOrderCreatePayAndCallbackFlow(t *testing.T) {
@@ -707,6 +736,93 @@ func TestAllergyServiceProductAdminCatalogAndOrderSnapshot(t *testing.T) {
 	listData := decodeAllergyAPIResponse[allergyAdminServiceProductPage](t, listRecorder)
 	if listData.Total < 2 {
 		t.Fatalf("expected admin product list to include default and children products, got %+v", listData)
+	}
+}
+
+func TestAllergyServiceProductImageUploadAndReuseOnCreateAndUpdate(t *testing.T) {
+	db, engine := setupAllergyFlowControllerTest(t)
+	admin := seedAdminUser(t, db)
+	adminHeaders := map[string]string{"X-Test-Admin-Id": strconv.Itoa(admin.Id)}
+
+	uploadRecorder := performMultipartFlowRequest(t, engine, "/api/admin/service-products/upload-image", nil, "file", "children.png", testPNGBytes(), adminHeaders)
+	uploadData := decodeAllergyAPIResponse[allergyAdminServiceProductImageUploadData](t, uploadRecorder)
+	if !strings.HasPrefix(uploadData.ImageURL, "/uploads/allergy-product-images/") {
+		t.Fatalf("expected uploaded image url to use uploads prefix, got %+v", uploadData)
+	}
+
+	uploadedImageRecorder := performFlowRequest(t, engine, http.MethodGet, uploadData.ImageURL, nil, nil)
+	if uploadedImageRecorder.Code != http.StatusOK {
+		t.Fatalf("expected uploaded image to be publicly accessible, got %d body=%s", uploadedImageRecorder.Code, uploadedImageRecorder.Body.String())
+	}
+	if !strings.Contains(uploadedImageRecorder.Header().Get("Content-Type"), "image/png") {
+		t.Fatalf("expected uploaded image content type to be image/png, got %q", uploadedImageRecorder.Header().Get("Content-Type"))
+	}
+
+	createProductRecorder := performFlowRequest(t, engine, http.MethodPost, "/api/admin/service-products", map[string]any{
+		"service_code": "adult-panel",
+		"title":        "成人专项过敏原检测",
+		"description":  "面向成人常见过敏原的检测项目",
+		"image_url":    uploadData.ImageURL,
+		"cta_text":     "立即检测",
+		"tag":          "热门",
+		"price_cents":  25900,
+		"sort_order":   3,
+		"status":       "draft",
+	}, adminHeaders)
+	createdProduct := decodeAllergyAPIResponse[allergyAdminServiceProductDetail](t, createProductRecorder)
+	if createdProduct.ImageURL != uploadData.ImageURL {
+		t.Fatalf("expected created product to use uploaded image, got %+v", createdProduct)
+	}
+
+	replaceUploadRecorder := performMultipartFlowRequest(t, engine, "/api/admin/service-products/upload-image", nil, "file", "adult-updated.png", testPNGBytes(), adminHeaders)
+	replaceUploadData := decodeAllergyAPIResponse[allergyAdminServiceProductImageUploadData](t, replaceUploadRecorder)
+	if replaceUploadData.ImageURL == uploadData.ImageURL {
+		t.Fatalf("expected replacement upload to generate a new url, got %+v", replaceUploadData)
+	}
+
+	updateRecorder := performFlowRequest(t, engine, http.MethodPatch, fmt.Sprintf("/api/admin/service-products/%d", createdProduct.ID), map[string]any{
+		"title":       "成人专项过敏原检测（升级版）",
+		"description": "升级后的成人过敏原检测项目",
+		"image_url":   replaceUploadData.ImageURL,
+		"cta_text":    "立即预约",
+		"tag":         "新品",
+		"price_cents": 28900,
+		"sort_order":  4,
+		"status":      "published",
+	}, adminHeaders)
+	updatedProduct := decodeAllergyAPIResponse[allergyAdminServiceProductDetail](t, updateRecorder)
+	if updatedProduct.ImageURL != replaceUploadData.ImageURL || updatedProduct.Status != "published" {
+		t.Fatalf("expected updated product to use replacement uploaded image, got %+v", updatedProduct)
+	}
+
+	publicRecorder := performFlowRequest(t, engine, http.MethodGet, "/api/products", nil, nil)
+	publicProducts := decodeAllergyJSON[[]allergyProductResponse](t, publicRecorder)
+	foundUploadedImageProduct := false
+	for _, product := range publicProducts {
+		if product.ID == "adult-panel" {
+			foundUploadedImageProduct = true
+			if product.Image != replaceUploadData.ImageURL {
+				t.Fatalf("expected published product image to match uploaded url, got %+v", product)
+			}
+		}
+	}
+	if !foundUploadedImageProduct {
+		t.Fatalf("expected published product with uploaded image to appear in public products, got %+v", publicProducts)
+	}
+}
+
+func TestAllergyServiceProductImageUploadRejectsNonImageFile(t *testing.T) {
+	db, engine := setupAllergyFlowControllerTest(t)
+	admin := seedAdminUser(t, db)
+	adminHeaders := map[string]string{"X-Test-Admin-Id": strconv.Itoa(admin.Id)}
+
+	uploadRecorder := performMultipartFlowRequest(t, engine, "/api/admin/service-products/upload-image", nil, "file", "not-image.txt", []byte("plain text"), adminHeaders)
+	var envelope allergyAPIResponse
+	if err := common.Unmarshal(uploadRecorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("failed to decode upload error response: %v body=%s", err, uploadRecorder.Body.String())
+	}
+	if envelope.Success || envelope.Message != "仅支持图片文件" {
+		t.Fatalf("expected non-image upload to fail, got body=%s", uploadRecorder.Body.String())
 	}
 }
 

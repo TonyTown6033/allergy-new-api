@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Button,
@@ -69,6 +69,16 @@ function getStatusMeta(status) {
   return meta[status] || { color: 'grey', label: status || '-' };
 }
 
+function toProductImageUrl(pathOrUrl) {
+  if (!pathOrUrl) return '';
+  if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')) {
+    return pathOrUrl;
+  }
+  const baseURL = API.defaults.baseURL || '';
+  if (!baseURL) return pathOrUrl;
+  return `${baseURL}${pathOrUrl.startsWith('/') ? '' : '/'}${pathOrUrl}`;
+}
+
 function toForm(product) {
   return {
     service_code: product?.service_code || '',
@@ -115,6 +125,8 @@ const AllergyServiceProducts = () => {
   const [modalVisible, setModalVisible] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
   const [form, setForm] = useState(defaultForm);
+  const [imageUploading, setImageUploading] = useState(false);
+  const imageInputRef = useRef(null);
 
   const loadProducts = async (nextPage = page, nextPageSize = pageSize) => {
     setLoading(true);
@@ -173,6 +185,40 @@ const AllergyServiceProducts = () => {
     setModalVisible(false);
     setEditingProduct(null);
     setForm(defaultForm);
+    if (imageInputRef.current) {
+      imageInputRef.current.value = '';
+    }
+  };
+
+  const uploadProductImage = async (file) => {
+    if (!file) return;
+    setImageUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await API.post('/api/admin/service-products/upload-image', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      if (!res.data.success) {
+        showError(res.data.message);
+        return;
+      }
+      const imageUrl = res.data.data?.image_url || '';
+      setForm((prev) => ({ ...prev, image_url: imageUrl }));
+      showSuccess('图片上传成功');
+    } catch (error) {
+      showError(getRequestErrorMessage(error, '图片上传失败'));
+    } finally {
+      if (imageInputRef.current) {
+        imageInputRef.current.value = '';
+      }
+      setImageUploading(false);
+    }
+  };
+
+  const handleImageFileChange = async (event) => {
+    const file = event.target.files?.[0];
+    await uploadProductImage(file);
   };
 
   const submitProduct = async () => {
@@ -373,10 +419,35 @@ const AllergyServiceProducts = () => {
           </label>
           <label className='grid gap-2'>
             <span className='text-sm font-medium'>{t('图片 URL')}</span>
-            <Input
-              value={form.image_url}
-              onChange={(value) => setForm({ ...form, image_url: value })}
+            <div className='flex flex-col gap-3 md:flex-row'>
+              <Input
+                value={form.image_url}
+                onChange={(value) => setForm({ ...form, image_url: value })}
+              />
+              <Button
+                theme='outline'
+                loading={imageUploading}
+                onClick={() => imageInputRef.current?.click()}
+              >
+                {t('上传本地图片')}
+              </Button>
+            </div>
+            <input
+              ref={imageInputRef}
+              type='file'
+              accept='image/*'
+              className='hidden'
+              onChange={handleImageFileChange}
             />
+            {form.image_url ? (
+              <div className='overflow-hidden rounded border border-semi-color-border bg-semi-color-bg-0'>
+                <img
+                  src={toProductImageUrl(form.image_url)}
+                  alt={form.title || '检测项目图片预览'}
+                  className='h-40 w-full object-cover'
+                />
+              </div>
+            ) : null}
           </label>
           <div className='grid gap-4 md:grid-cols-2'>
             <label className='grid gap-2'>

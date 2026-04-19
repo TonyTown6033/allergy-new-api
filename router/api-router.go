@@ -109,6 +109,7 @@ func SetApiRouter(router *gin.Engine) {
 			allergyAdminRoute.GET("/reports/:id/delivery-logs", controller.ListAdminAllergyReportDeliveryLogs)
 			allergyAdminRoute.GET("/service-products", controller.ListAdminAllergyServiceProducts)
 			allergyAdminRoute.GET("/service-products/:id", controller.GetAdminAllergyServiceProduct)
+			allergyAdminRoute.POST("/service-products/upload-image", controller.UploadAdminAllergyServiceProductImage)
 			allergyAdminRoute.POST("/service-products", controller.CreateAdminAllergyServiceProduct)
 			allergyAdminRoute.PATCH("/service-products/:id", controller.UpdateAdminAllergyServiceProduct)
 			allergyAdminRoute.POST("/service-products/:id/publish", controller.PublishAdminAllergyServiceProduct)
