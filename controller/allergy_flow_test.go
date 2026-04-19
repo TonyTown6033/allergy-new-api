@@ -62,13 +62,21 @@ type allergyOrderListItem struct {
 	OrderStatus   string `json:"order_status"`
 }
 
+type allergyPaymentMethodDTO struct {
+	Code  string `json:"code"`
+	Label string `json:"label"`
+}
+
 type allergyOrderDetailData struct {
-	OrderID       int64  `json:"order_id"`
-	OrderNo       string `json:"order_no"`
-	ServiceName   string `json:"service_name"`
-	PaymentStatus string `json:"payment_status"`
-	OrderStatus   string `json:"order_status"`
-	SampleKit     struct {
+	OrderID                 int64                     `json:"order_id"`
+	OrderNo                 string                    `json:"order_no"`
+	ServiceName             string                    `json:"service_name"`
+	ServicePriceCents       int                       `json:"service_price_cents"`
+	Currency                string                    `json:"currency"`
+	PaymentStatus           string                    `json:"payment_status"`
+	OrderStatus             string                    `json:"order_status"`
+	AvailablePaymentMethods []allergyPaymentMethodDTO `json:"available_payment_methods"`
+	SampleKit               struct {
 		KitCode            string `json:"kit_code"`
 		KitStatus          string `json:"kit_status"`
 		OutboundTrackingNo string `json:"outbound_tracking_no"`
@@ -847,6 +855,47 @@ func TestAllergyOrderQueriesAndReportPermissions(t *testing.T) {
 	forbiddenPreview := performFlowRequest(t, engine, http.MethodGet, fmt.Sprintf("/api/reports/%d/preview", report.ID), nil, otherHeaders)
 	if forbiddenPreview.Code != http.StatusForbidden {
 		t.Fatalf("expected forbidden preview for other user, got %d body=%s", forbiddenPreview.Code, forbiddenPreview.Body.String())
+	}
+}
+
+func TestAllergyOrderDetailReturnsPriceSnapshotAndDynamicPaymentMethods(t *testing.T) {
+	db, engine := setupAllergyFlowControllerTest(t)
+	user, token := seedAllergyMemberSession(t, db, "member@example.com")
+	headers := map[string]string{"Authorization": "Bearer " + token}
+
+	createRecorder := performFlowRequest(t, engine, http.MethodPost, "/api/orders", map[string]any{
+		"service_code":    "allergy-test-basic",
+		"recipient_name":  "张三",
+		"recipient_phone": "13800000000",
+		"recipient_email": user.Email,
+		"shipping_address": map[string]any{
+			"province":     "上海市",
+			"city":         "上海市",
+			"district":     "浦东新区",
+			"address_line": "世纪大道 100 号",
+		},
+	}, headers)
+	createData := decodeAllergyAPIResponse[allergyOrderCreateData](t, createRecorder)
+
+	originalPayMethods := operation_setting.PayMethods
+	operation_setting.PayMethods = []map[string]string{
+		{"name": "银联支付", "type": "unionpay"},
+		{"name": "微信支付", "type": "wxpay"},
+	}
+	t.Cleanup(func() {
+		operation_setting.PayMethods = originalPayMethods
+	})
+
+	detailRecorder := performFlowRequest(t, engine, http.MethodGet, fmt.Sprintf("/api/orders/%d", createData.OrderID), nil, headers)
+	detail := decodeAllergyAPIResponse[allergyOrderDetailData](t, detailRecorder)
+	if detail.ServicePriceCents <= 0 || detail.Currency != "CNY" {
+		t.Fatalf("expected price snapshot and currency, got %+v", detail)
+	}
+	if len(detail.AvailablePaymentMethods) != 2 {
+		t.Fatalf("expected 2 payment methods, got %+v", detail.AvailablePaymentMethods)
+	}
+	if detail.AvailablePaymentMethods[0].Code != "unionpay" || detail.AvailablePaymentMethods[0].Label != "银联支付" {
+		t.Fatalf("expected dynamic payment methods from setting, got %+v", detail.AvailablePaymentMethods)
 	}
 }
 

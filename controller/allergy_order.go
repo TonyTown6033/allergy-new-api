@@ -75,6 +75,25 @@ type sendAdminAllergyReportEmailRequest struct {
 	TargetEmail string `json:"target_email"`
 }
 
+func buildAllergyAvailablePaymentMethods() []gin.H {
+	items := make([]gin.H, 0, len(operation_setting.PayMethods))
+	for _, payMethod := range operation_setting.PayMethods {
+		code := strings.TrimSpace(payMethod["type"])
+		if code == "" {
+			continue
+		}
+		label := strings.TrimSpace(payMethod["name"])
+		if label == "" {
+			label = code
+		}
+		items = append(items, gin.H{
+			"code":  code,
+			"label": label,
+		})
+	}
+	return items
+}
+
 func CreateAllergyOrder(c *gin.Context) {
 	var req createAllergyOrderRequest
 	if err := common.DecodeJson(c.Request.Body, &req); err != nil {
@@ -162,16 +181,19 @@ func GetAllergyOrderDetail(c *gin.Context) {
 	}
 	shippingAddress := decodeJSONStringToMap(order.ShippingAddressJSON)
 	response := gin.H{
-		"order_id":         order.ID,
-		"order_no":         order.OrderNo,
-		"service_name":     order.ServiceNameSnapshot,
-		"payment_status":   order.PaymentStatus,
-		"order_status":     order.OrderStatus,
-		"recipient_name":   order.RecipientName,
-		"recipient_phone":  order.RecipientPhone,
-		"recipient_email":  order.RecipientEmail,
-		"shipping_address": shippingAddress,
-		"sample_kit":       nil,
+		"order_id":                  order.ID,
+		"order_no":                  order.OrderNo,
+		"service_name":              order.ServiceNameSnapshot,
+		"service_price_cents":       order.ServicePriceCents,
+		"currency":                  order.Currency,
+		"payment_status":            order.PaymentStatus,
+		"order_status":              order.OrderStatus,
+		"recipient_name":            order.RecipientName,
+		"recipient_phone":           order.RecipientPhone,
+		"recipient_email":           order.RecipientEmail,
+		"shipping_address":          shippingAddress,
+		"available_payment_methods": buildAllergyAvailablePaymentMethods(),
+		"sample_kit":                nil,
 	}
 	if kit != nil {
 		response["sample_kit"] = gin.H{
