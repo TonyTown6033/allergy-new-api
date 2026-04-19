@@ -205,6 +205,25 @@ func GetAllergyOrderDetail(c *gin.Context) {
 	common.ApiSuccess(c, response)
 }
 
+func CancelAllergyOrder(c *gin.Context) {
+	orderID, ok := parseInt64Param(c, "id")
+	if !ok {
+		common.ApiErrorMsg(c, "订单参数错误")
+		return
+	}
+	order, err := model.CancelAllergyOrder(c.GetInt("id"), orderID)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"order_id":       order.ID,
+		"payment_status": order.PaymentStatus,
+		"order_status":   order.OrderStatus,
+		"cancelled_at":   formatOptionalTime(order.CancelledAt),
+	})
+}
+
 func RequestAllergyOrderEpay(c *gin.Context) {
 	orderID, ok := parseInt64Param(c, "id")
 	if !ok {

@@ -76,6 +76,7 @@ func SetApiRouter(router *gin.Engine) {
 			allergyOrderRoute.POST("/orders", controller.CreateAllergyOrder)
 			allergyOrderRoute.GET("/orders", controller.ListAllergyOrders)
 			allergyOrderRoute.GET("/orders/:id", controller.GetAllergyOrderDetail)
+			allergyOrderRoute.POST("/orders/:id/cancel", controller.CancelAllergyOrder)
 			allergyOrderRoute.POST("/orders/:id/pay", middleware.CriticalRateLimit(), controller.RequestAllergyOrderEpay)
 			allergyOrderRoute.GET("/orders/:id/pay-status", controller.GetAllergyOrderPayStatus)
 			allergyOrderRoute.GET("/orders/:id/timeline", controller.GetAllergyOrderTimeline)

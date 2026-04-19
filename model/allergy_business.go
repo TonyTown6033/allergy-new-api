@@ -220,6 +220,40 @@ func SetAllergyOrderPaymentRequest(orderID int64, userID int, paymentMethod stri
 	return order, nil
 }
 
+func CancelAllergyOrder(userID int, orderID int64) (*AllergyOrder, error) {
+	var order AllergyOrder
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("id = ? AND user_id = ?", orderID, userID).First(&order).Error; err != nil {
+			return err
+		}
+		if order.PaymentStatus != AllergyPaymentStatusPending || order.OrderStatus != AllergyOrderStatusPendingPayment {
+			return errors.New("订单当前状态不可取消")
+		}
+
+		now := time.Now()
+		if err := tx.Model(&order).Updates(map[string]any{
+			"payment_status": AllergyPaymentStatusCancelled,
+			"order_status":   AllergyOrderStatusCancelled,
+			"cancelled_at":   &now,
+			"updated_at":     now,
+		}).Error; err != nil {
+			return err
+		}
+		if err := createOrderTimelineEventTx(tx, order.ID, "cancelled", "订单已取消", "您已取消当前订单，可重新下单", true, userID, "", now); err != nil {
+			return err
+		}
+
+		order.PaymentStatus = AllergyPaymentStatusCancelled
+		order.OrderStatus = AllergyOrderStatusCancelled
+		order.CancelledAt = &now
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &order, nil
+}
+
 func CompleteAllergyOrderPayment(tradeNo string, providerOrderNo string, payloadJSON string) (*AllergyOrder, error) {
 	var order AllergyOrder
 	err := DB.Transaction(func(tx *gorm.DB) error {
@@ -230,6 +264,13 @@ func CompleteAllergyOrderPayment(tradeNo string, providerOrderNo string, payload
 			return nil
 		}
 		now := time.Now()
+		if order.PaymentStatus == AllergyPaymentStatusCancelled || order.OrderStatus == AllergyOrderStatusCancelled {
+			return tx.Model(&order).Updates(map[string]any{
+				"payment_provider_order_no":     providerOrderNo,
+				"payment_callback_payload_json": payloadJSON,
+				"updated_at":                    now,
+			}).Error
+		}
 		if err := tx.Model(&order).Updates(map[string]any{
 			"payment_status":                AllergyPaymentStatusPaid,
 			"order_status":                  AllergyOrderStatusPaid,

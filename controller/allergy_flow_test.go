@@ -54,6 +54,13 @@ type allergyPayStatusData struct {
 	PaidAt        string `json:"paid_at"`
 }
 
+type allergyCancelOrderData struct {
+	OrderID       int64  `json:"order_id"`
+	PaymentStatus string `json:"payment_status"`
+	OrderStatus   string `json:"order_status"`
+	CancelledAt   string `json:"cancelled_at"`
+}
+
 type allergyOrderListItem struct {
 	OrderID       int64  `json:"order_id"`
 	OrderNo       string `json:"order_no"`
@@ -288,6 +295,7 @@ func setupAllergyFlowControllerTest(t *testing.T) (*gorm.DB, *gin.Engine) {
 		memberRoute.POST("/orders", CreateAllergyOrder)
 		memberRoute.GET("/orders", ListAllergyOrders)
 		memberRoute.GET("/orders/:id", GetAllergyOrderDetail)
+		memberRoute.POST("/orders/:id/cancel", CancelAllergyOrder)
 		memberRoute.POST("/orders/:id/pay", RequestAllergyOrderEpay)
 		memberRoute.GET("/orders/:id/pay-status", GetAllergyOrderPayStatus)
 		memberRoute.GET("/orders/:id/timeline", GetAllergyOrderTimeline)
@@ -764,6 +772,125 @@ func TestAllergyOrderEpayReturnRedirectsToRequestedFrontendURL(t *testing.T) {
 	payStatus := decodeAllergyAPIResponse[allergyPayStatusData](t, payStatusRecorder)
 	if payStatus.PaymentStatus != "paid" || payStatus.OrderStatus != "paid" {
 		t.Fatalf("expected order to be paid after return callback, got %+v", payStatus)
+	}
+}
+
+func TestAllergyMemberCanCancelPendingOrderAndLateCallbackDoesNotReopenIt(t *testing.T) {
+	db, engine := setupAllergyFlowControllerTest(t)
+	user, token := seedAllergyMemberSession(t, db, "member@example.com")
+	headers := map[string]string{"Authorization": "Bearer " + token}
+
+	createRecorder := performFlowRequest(t, engine, http.MethodPost, "/api/orders", map[string]any{
+		"service_code":    "allergy-test-basic",
+		"recipient_name":  "张三",
+		"recipient_phone": "13800000000",
+		"recipient_email": user.Email,
+		"shipping_address": map[string]any{
+			"province":     "上海市",
+			"city":         "上海市",
+			"district":     "浦东新区",
+			"address_line": "世纪大道 100 号",
+		},
+	}, headers)
+	createData := decodeAllergyAPIResponse[allergyOrderCreateData](t, createRecorder)
+
+	payRecorder := performFlowRequest(t, engine, http.MethodPost, fmt.Sprintf("/api/orders/%d/pay", createData.OrderID), map[string]any{
+		"payment_method": "alipay",
+		"success_url":    fmt.Sprintf("https://www.allergy.test/orders/%d?payment_result=success", createData.OrderID),
+		"cancel_url":     fmt.Sprintf("https://www.allergy.test/orders/%d?payment_result=cancelled", createData.OrderID),
+	}, headers)
+	payData := decodeAllergyAPIResponse[allergyPayData](t, payRecorder)
+
+	cancelRecorder := performFlowRequest(t, engine, http.MethodPost, fmt.Sprintf("/api/orders/%d/cancel", createData.OrderID), nil, headers)
+	cancelData := decodeAllergyAPIResponse[allergyCancelOrderData](t, cancelRecorder)
+	if cancelData.OrderID != createData.OrderID || cancelData.PaymentStatus != "cancelled" || cancelData.OrderStatus != "cancelled" || cancelData.CancelledAt == "" {
+		t.Fatalf("unexpected cancel response: %+v", cancelData)
+	}
+
+	payStatusRecorder := performFlowRequest(t, engine, http.MethodGet, fmt.Sprintf("/api/orders/%d/pay-status", createData.OrderID), nil, headers)
+	payStatus := decodeAllergyAPIResponse[allergyPayStatusData](t, payStatusRecorder)
+	if payStatus.PaymentStatus != "cancelled" || payStatus.OrderStatus != "cancelled" || payStatus.PaidAt != "" {
+		t.Fatalf("expected cancelled pay status, got %+v", payStatus)
+	}
+
+	timelineRecorder := performFlowRequest(t, engine, http.MethodGet, fmt.Sprintf("/api/orders/%d/timeline", createData.OrderID), nil, headers)
+	timeline := decodeAllergyAPIResponse[[]allergyTimelineItem](t, timelineRecorder)
+	if len(timeline) < 2 {
+		t.Fatalf("expected cancel timeline event, got %+v", timeline)
+	}
+	lastItem := timeline[len(timeline)-1]
+	if lastItem.EventType != "cancelled" || lastItem.Title != "订单已取消" {
+		t.Fatalf("unexpected last timeline item: %+v", lastItem)
+	}
+
+	callbackParams := map[string]string{
+		"pid":          operation_setting.EpayId,
+		"type":         "alipay",
+		"out_trade_no": payData.TradeNo,
+		"trade_no":     "EPAY-LATE-CANCELLED-001",
+		"name":         "Allergy Order",
+		"money":        "199.00",
+		"trade_status": epay.StatusTradeSuccess,
+		"sign_type":    "MD5",
+	}
+	signed := epay.GenerateParams(callbackParams, operation_setting.EpayKey)
+	form := url.Values{}
+	for key, value := range signed {
+		form.Set(key, value)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/orders/epay/notify", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, req)
+	if recorder.Body.String() != "success" {
+		t.Fatalf("expected late callback to be acknowledged, got %q", recorder.Body.String())
+	}
+
+	afterLateCallbackRecorder := performFlowRequest(t, engine, http.MethodGet, fmt.Sprintf("/api/orders/%d/pay-status", createData.OrderID), nil, headers)
+	afterLateCallback := decodeAllergyAPIResponse[allergyPayStatusData](t, afterLateCallbackRecorder)
+	if afterLateCallback.PaymentStatus != "cancelled" || afterLateCallback.OrderStatus != "cancelled" {
+		t.Fatalf("late callback must not reopen cancelled order, got %+v", afterLateCallback)
+	}
+}
+
+func TestAllergyMemberCannotCancelPaidOrder(t *testing.T) {
+	db, engine := setupAllergyFlowControllerTest(t)
+	user, token := seedAllergyMemberSession(t, db, "member@example.com")
+	headers := map[string]string{"Authorization": "Bearer " + token}
+
+	paidAt := time.Now().Add(-10 * time.Minute)
+	order := model.AllergyOrder{
+		OrderNo:             "AO-CANCEL-PAID-001",
+		UserID:              user.Id,
+		ServiceCode:         "allergy-test-basic",
+		ServiceNameSnapshot: "埃勒吉居家过敏原检测服务",
+		ServicePriceCents:   19900,
+		Currency:            "CNY",
+		PaymentStatus:       "paid",
+		OrderStatus:         "paid",
+		RecipientName:       "张三",
+		RecipientPhone:      "13800000000",
+		RecipientEmail:      user.Email,
+		ShippingAddressJSON: `{"province":"上海市","city":"上海市","district":"浦东新区","address_line":"世纪大道 100 号"}`,
+		PaidAt:              &paidAt,
+	}
+	if err := db.Create(&order).Error; err != nil {
+		t.Fatalf("failed to create paid order: %v", err)
+	}
+
+	cancelRecorder := performFlowRequest(t, engine, http.MethodPost, fmt.Sprintf("/api/orders/%d/cancel", order.ID), nil, headers)
+	var envelope allergyAPIResponse
+	if err := common.Unmarshal(cancelRecorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("failed to decode cancel error response: %v body=%s", err, cancelRecorder.Body.String())
+	}
+	if envelope.Success || envelope.Message != "订单当前状态不可取消" {
+		t.Fatalf("expected cancel paid order to fail, got body=%s", cancelRecorder.Body.String())
+	}
+
+	payStatusRecorder := performFlowRequest(t, engine, http.MethodGet, fmt.Sprintf("/api/orders/%d/pay-status", order.ID), nil, headers)
+	payStatus := decodeAllergyAPIResponse[allergyPayStatusData](t, payStatusRecorder)
+	if payStatus.PaymentStatus != "paid" || payStatus.OrderStatus != "paid" {
+		t.Fatalf("paid order state must stay unchanged, got %+v", payStatus)
 	}
 }
 
